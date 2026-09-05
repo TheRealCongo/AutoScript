@@ -34,12 +34,14 @@ class TranscriptionWorker:
         transcript_path: Path,
         delete_chunks: bool = True,
         on_line: Optional[Callable[[str], None]] = None,
+        speaker_label: str | None = None,
     ):
         self.model = model
         self.chunk_queue = chunk_queue
         self.transcript_path = transcript_path
         self.delete_chunks = delete_chunks
         self.on_line = on_line
+        self.speaker_label = speaker_label
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -55,12 +57,14 @@ class TranscriptionWorker:
     def _run(self):
         while not (self._stop.is_set() and self.chunk_queue.empty()):
             try:
-                chunk_path, chunk_start_wall = self.chunk_queue.get(timeout=1)
+                item = self.chunk_queue.get(timeout=1)
+                chunk_path, chunk_start_wall, *metadata = item
             except queue.Empty:
                 continue
 
             try:
-                self._transcribe_chunk(chunk_path, chunk_start_wall)
+                speaker_label = metadata[0] if metadata else self.speaker_label
+                self._transcribe_chunk(chunk_path, chunk_start_wall, speaker_label)
             except Exception as exc:
                 self._append_line(f"**[ERROR transcribing {chunk_path.name}: {exc}]**")
             finally:
@@ -68,7 +72,9 @@ class TranscriptionWorker:
                     self._delete_chunk(chunk_path)
                 self.chunk_queue.task_done()
 
-    def _transcribe_chunk(self, chunk_path: Path, chunk_start_wall: float):
+    def _transcribe_chunk(
+        self, chunk_path: Path, chunk_start_wall: float, speaker_label: str | None = None
+    ):
         segments, _info = self.model.transcribe(str(chunk_path), vad_filter=True)
         for seg in segments:
             text = seg.text.strip()
@@ -76,7 +82,8 @@ class TranscriptionWorker:
                 continue
             ts = time.localtime(chunk_start_wall + seg.start)
             stamp = time.strftime("%H:%M:%S", ts)
-            self._append_line(f"**[{stamp}]** {text}")
+            speaker = f"**{speaker_label}:** " if speaker_label else ""
+            self._append_line(f"**[{stamp}]** {speaker}{text}")
 
     def _delete_chunk(self, chunk_path: Path):
         # av's decoder can hold the file handle open a beat past the loop

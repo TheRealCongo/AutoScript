@@ -40,6 +40,7 @@ from capture import (
     make_recorder,
     process_running,
 )
+from plugin_manager import PluginManager
 
 # transcriber.py pulls in faster-whisper -> ctranslate2/onnxruntime/av, which
 # together take ~2s+ to import in a frozen build (vs ~0.2s from source) -
@@ -55,12 +56,18 @@ else:
     ROOT = Path(__file__).parent
     RESOURCES = ROOT
 
+# ``ROOT`` becomes the user-selected data directory after first-run setup.
+# Keep the install folder separate: downloadable plugins always live beside
+# CDCT.exe, regardless of where a user stores their transcripts.
+APP_DIR = ROOT
+
 CHUNKS_DIR = ROOT / "chunks"
 TRANSCRIPTS_DIR = ROOT / "transcripts"
 ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
+APP_VERSION = "2.1.0"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
@@ -235,6 +242,7 @@ class TranscriberApp(ctk.CTk):
         self.mode = "new"  # "new" or "history"
         self.selected_history_path: Path | None = None
         self.history_buttons: dict[Path, ctk.CTkButton] = {}
+        self._last_history_scan = 0.0
         self.current_raw_text = ""
         self.pinned: set[str] = self._load_pinned()
         self.names: dict[str, str] = self._load_names()
@@ -250,6 +258,17 @@ class TranscriberApp(ctk.CTk):
         self.target_menu: ctk.CTkButton | None = None
         self.target_dropdown: ctk.CTkToplevel | None = None
         self._target_options: dict[str, tuple[str, str, int]] = {}
+        self.plugin_menu: ctk.CTkButton | None = None
+        self.plugin_dropdown: ctk.CTkToplevel | None = None
+        self._plugin_toggle_vars: dict[str, ctk.BooleanVar] = {}
+        self._plugin_status_labels: dict[str, ctk.CTkLabel] = {}
+        self.plugin_manager = PluginManager(
+            APP_DIR / "plugins",
+            CONFIG_DIR / "plugins.json",
+            APP_VERSION,
+            TRANSCRIPTS_DIR,
+        )
+        self.plugin_manager.discover()
         self.active_capture_mode: str = "full"
         self.settings_popup = None
 
@@ -258,10 +277,23 @@ class TranscriberApp(ctk.CTk):
         self.show_new_recording()
         self._refresh_history()
         self._poll_queue()
+        self.plugin_manager.activate_enabled()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        # Borderless settings/dropdown windows are independent native topmost
+        # windows. Dismiss them when CDCT is minimized so none remain floating
+        # above the desktop or prevent the main window from being restored.
+        self.bind("<Unmap>", self._on_main_unmap, add="+")
 
     # ---------- UI construction ----------
+
+    def _on_main_unmap(self, _event=None):
+        """Close transient UI after Windows finishes minimizing the main app."""
+        self.after_idle(self._close_transients_if_minimized)
+
+    def _close_transients_if_minimized(self):
+        if self.state() == "iconic":
+            self._close_settings_panel()
 
     def _build_sidebar(self):
         sidebar = ctk.CTkFrame(self, width=250, fg_color=BG_SIDEBAR, corner_radius=0)
@@ -463,7 +495,10 @@ class TranscriberApp(ctk.CTk):
         return self.names.get(path.name) or _history_title(path)
 
     def _sorted_history_paths(self):
-        paths = TRANSCRIPTS_DIR.glob("transcript_*.md")
+        # Base CDCT sessions and optional plugins share this folder. Plugins
+        # may use their own meaningful filename convention, so every Markdown
+        # transcript belongs in the same Recent Transcripts list.
+        paths = TRANSCRIPTS_DIR.glob("*.md")
         return sorted(
             paths,
             key=lambda p: (p.name not in self.pinned, -p.stat().st_mtime),
@@ -816,6 +851,24 @@ class TranscriberApp(ctk.CTk):
         )
         self.target_menu.pack(fill="x", pady=(4, 0))
 
+        plugins_row = setting_row(
+            "Plugins",
+            "Optional extensions installed beside CDCT. Enable only plugins you trust; "
+            "they run locally with the same permissions as CDCT.",
+        )
+        self.plugin_menu = ctk.CTkButton(
+            plugins_row,
+            command=self._toggle_plugin_dropdown,
+            fg_color=BG_SIDEBAR,
+            hover_color=BG_SIDEBAR_HOVER,
+            font=app_font(12),
+            anchor="w",
+            text_color=FG_TEXT,
+            corner_radius=6,
+        )
+        self.plugin_menu.pack(fill="x", pady=(4, 0))
+        self._refresh_plugin_menu()
+
         keep_row = ctk.CTkFrame(popup, fg_color="transparent")
         keep_row.pack(fill="x", padx=16, pady=(0, 16))
         keep_cb = ctk.CTkCheckBox(
@@ -870,6 +923,8 @@ class TranscriberApp(ctk.CTk):
         widgets = [popup, self.gear_btn]
         if self.target_dropdown and self.target_dropdown.winfo_exists():
             widgets.append(self.target_dropdown)
+        if self.plugin_dropdown and self.plugin_dropdown.winfo_exists():
+            widgets.append(self.plugin_dropdown)
         for widget in widgets:
             wx, wy = widget.winfo_rootx(), widget.winfo_rooty()
             ww, wh = widget.winfo_width(), widget.winfo_height()
@@ -879,10 +934,12 @@ class TranscriberApp(ctk.CTk):
 
     def _close_settings_panel(self):
         self._close_target_dropdown()
+        self._close_plugin_dropdown()
         if self.settings_popup and self.settings_popup.winfo_exists():
             self.settings_popup.destroy()
         self.settings_popup = None
         self.target_menu = None
+        self.plugin_menu = None
         self.unbind_all("<Button-1>")
 
     def _truncate_target_label(self, text: str, max_width: int) -> str:
@@ -985,6 +1042,144 @@ class TranscriberApp(ctk.CTk):
         if self.target_menu and self.target_menu.winfo_exists():
             self._refresh_target_options()
         self._close_target_dropdown()
+
+    # ---------- optional plugins ----------
+
+    def _refresh_plugin_menu(self):
+        if not self.plugin_menu or not self.plugin_menu.winfo_exists():
+            return
+        plugins = list(self.plugin_manager.plugins.values())
+        enabled = sum(plugin.enabled for plugin in plugins)
+        if not plugins:
+            label = "Plugins (none)  ▾"
+        elif enabled:
+            label = f"Plugins ({enabled}/{len(plugins)} enabled)  ▾"
+        else:
+            label = f"Plugins ({len(plugins)})  ▾"
+        self.plugin_menu.configure(text=label)
+
+    def _toggle_plugin_dropdown(self):
+        if self.plugin_dropdown and self.plugin_dropdown.winfo_exists():
+            self._close_plugin_dropdown()
+            return
+        if not self.plugin_menu or not self.plugin_menu.winfo_exists():
+            return
+
+        # A plugin can be copied in while CDCT is open, so refresh manifests
+        # whenever this list is opened. Discovery never imports plugin code.
+        self.plugin_manager.discover()
+        self._refresh_plugin_menu()
+        dropdown = ctk.CTkToplevel(self)
+        dropdown.overrideredirect(True)
+        dropdown.configure(fg_color=BG_CONTROL)
+        dropdown.attributes("-topmost", True)
+        dropdown.transient(self.settings_popup or self)
+        _mark_as_tool_window(dropdown)
+        _round_window_corners(dropdown)
+
+        content = ctk.CTkScrollableFrame(dropdown, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=6, pady=6)
+        self._plugin_toggle_vars = {}
+        self._plugin_status_labels = {}
+        plugins = list(self.plugin_manager.plugins.values())
+        if not plugins:
+            ctk.CTkLabel(
+                content,
+                text="No plugins found. Add plugin folders beside CDCT.exe.",
+                text_color=FG_FAINT,
+                font=app_font(12),
+                wraplength=300,
+                justify="left",
+            ).pack(padx=10, pady=10, anchor="w")
+        else:
+            for plugin in plugins:
+                row = ctk.CTkFrame(content, fg_color="transparent")
+                row.pack(fill="x", pady=3, padx=4)
+                enabled_var = ctk.BooleanVar(value=plugin.enabled)
+                self._plugin_toggle_vars[plugin.plugin_id] = enabled_var
+                can_toggle = plugin.status not in {"Incompatible", "Invalid manifest", "Duplicate ID"}
+                checkbox = ctk.CTkCheckBox(
+                    row,
+                    text=f"{plugin.name}  v{plugin.version}",
+                    variable=enabled_var,
+                    command=lambda plugin_id=plugin.plugin_id: self._set_plugin_enabled(plugin_id),
+                    fg_color=ACCENT,
+                    hover_color=ACCENT_HOVER,
+                    text_color=FG_TEXT,
+                    font=app_font(12),
+                )
+                checkbox.pack(anchor="w", side="left")
+                if not can_toggle:
+                    checkbox.configure(state="disabled")
+                if plugin.instance is not None and callable(
+                    getattr(plugin.instance, "open_settings", None)
+                ):
+                    ctk.CTkButton(
+                        row,
+                        text="Configure",
+                        command=lambda plugin_id=plugin.plugin_id: self._open_plugin_settings(plugin_id),
+                        fg_color="transparent",
+                        hover_color=BG_SIDEBAR_HOVER,
+                        text_color=ACCENT,
+                        font=app_font(10),
+                        width=76,
+                        height=24,
+                    ).pack(anchor="e", side="right")
+                detail = plugin.detail or plugin.description or plugin.status
+                status = ctk.CTkLabel(
+                    row,
+                    text=f"{plugin.status} — {detail}" if detail else plugin.status,
+                    text_color=FG_FAINT if plugin.status in {"Disabled", "Ready"} else FG_MUTED,
+                    font=app_font(10),
+                    anchor="w",
+                    justify="left",
+                    wraplength=300,
+                )
+                status.pack(fill="x", padx=(28, 0), pady=(0, 3))
+                self._plugin_status_labels[plugin.plugin_id] = status
+
+        dropdown.update_idletasks()
+        logical_width = max(self.plugin_menu.winfo_reqwidth(), 350)
+        logical_height = min(dropdown.winfo_reqheight(), 300)
+        x = self.plugin_menu.winfo_rootx()
+        y = self.plugin_menu.winfo_rooty() + self.plugin_menu.winfo_height() + 4
+        dropdown.geometry(f"{logical_width}x{logical_height}+{x}+{y}")
+        _round_window_corners(dropdown)
+        self.plugin_dropdown = dropdown
+
+    def _set_plugin_enabled(self, plugin_id: str):
+        enabled = self._plugin_toggle_vars[plugin_id].get()
+        plugin = self.plugin_manager.set_enabled(plugin_id, enabled)
+        # A failed activation remains checked: it reflects the user's saved
+        # intent and lets a repaired plugin start automatically next launch.
+        label = self._plugin_status_labels.get(plugin_id)
+        if label and label.winfo_exists():
+            detail = plugin.detail or plugin.description or plugin.status
+            label.configure(
+                text=f"{plugin.status} — {detail}" if detail else plugin.status,
+                text_color=FG_FAINT if plugin.status in {"Disabled", "Ready"} else FG_MUTED,
+            )
+        self._refresh_plugin_menu()
+        # Enabling a configurable plugin creates its instance. Rebuild the
+        # small dropdown immediately so its Configure button appears without
+        # making the user close and reopen Settings themselves.
+        if enabled and plugin.instance is not None:
+            self._close_plugin_dropdown()
+            self.after_idle(self._toggle_plugin_dropdown)
+
+    def _open_plugin_settings(self, plugin_id: str):
+        plugin = self.plugin_manager.open_settings(plugin_id, self)
+        label = self._plugin_status_labels.get(plugin_id)
+        if label and label.winfo_exists():
+            detail = plugin.detail or plugin.description or plugin.status
+            label.configure(text=f"{plugin.status} — {detail}" if detail else plugin.status)
+
+    def _close_plugin_dropdown(self):
+        if self.plugin_dropdown and self.plugin_dropdown.winfo_exists():
+            self.plugin_dropdown.destroy()
+        self.plugin_dropdown = None
+        self._plugin_toggle_vars = {}
+        self._plugin_status_labels = {}
 
     def start(self):
         if self.running:
@@ -1210,10 +1405,12 @@ class TranscriberApp(ctk.CTk):
                 got_line = True
         except queue.Empty:
             pass
-        if got_line:
+        now = time.monotonic()
+        if got_line or now - self._last_history_scan >= 2.0:
             if self.mode == "new" and self.running:
                 self._load_live_transcript()
             self._refresh_history()
+            self._last_history_scan = now
         self.after(250, self._poll_queue)
 
     def on_close(self):
@@ -1221,6 +1418,7 @@ class TranscriberApp(ctk.CTk):
             if not messagebox.askyesno("Quit", "Recording is in progress. Stop and quit?"):
                 return
             self._stop_backend()
+        self.plugin_manager.shutdown()
         self.destroy()
 
 

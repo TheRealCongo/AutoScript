@@ -50,8 +50,8 @@ audio that the selected process produces.
 - **First run:** choose where transcripts and optional audio chunks should be
   stored. CDCT remembers that location.
 - **Settings:** use the gear in the sidebar to choose the Whisper model,
-  chunk length, capture target, and whether to retain WAV chunks after
-  transcription.
+  chunk length, capture target, optional plugins, and whether to retain WAV
+  chunks after transcription.
 
 The sidebar lists previous sessions. You can search an open transcript,
 rename or pin sessions, and delete sessions you no longer need.
@@ -103,8 +103,12 @@ automatic.
 - `capture.py` — full-system and per-process capture, plus target enumeration
 - `transcriber.py` — Whisper worker and transcript writing
 - `gui.py` — desktop UI, settings, session history, and first-run setup
-- `main.py` — command-line entry point
-- `build_exe.ps1` — PyInstaller build script
+- `main.py` - command-line entry point
+- `build_exe.ps1` - PyInstaller build script
+- `plugin_api.py` / `plugin_manager.py` - optional external-plugin contract
+  and loader
+- `plugins/` - install location for optional extensions; see
+  [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md)
 
 ## License
 
