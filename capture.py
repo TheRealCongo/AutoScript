@@ -41,7 +41,19 @@ _GW_OWNER = 4
 # check but aren't apps a user would pick as a call target
 _EXCLUDED_TITLES = {"Program Manager", "Windows Input Experience"}
 _EXCLUDED_PROCESSES = {"searchhost.exe", "shellexperiencehost.exe", "textinputhost.exe",
-                        "startmenuexperiencehost.exe"}
+                        "startmenuexperiencehost.exe", "systemsettings.exe",
+                        "applicationframehost.exe"}
+
+
+def _is_cdct_process(proc: psutil.Process) -> bool:
+    """Whether `proc` belongs to a source or packaged CDCT instance."""
+    try:
+        if proc.name().casefold() == "cdct.exe":
+            return True
+        command = " ".join(proc.cmdline()).casefold()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return "discordcalltranscriber" in command and "gui.py" in command
 
 
 def list_open_windows() -> list[tuple[str, str, int]]:
@@ -50,7 +62,7 @@ def list_open_windows() -> list[tuple[str, str, int]]:
     Returns a sorted list of (window_title, process_name, pid) tuples, deduped
     by process name (keeps whichever window/pid was seen first per process -
     a second window of an already-seen exe, e.g. a second browser window, is
-    not offered as a separate target). Excludes this app's own process and
+    not offered as a separate target). Excludes every CDCT instance plus
     common shell/system windows.
 
     The pid is the *main window's* owning process, which for multi-process
@@ -79,7 +91,10 @@ def list_open_windows() -> list[tuple[str, str, int]]:
         buf = ctypes.create_unicode_buffer(length + 1)
         _user32.GetWindowTextW(hwnd, buf, length + 1)
         title = buf.value.strip()
-        if not title or title in _EXCLUDED_TITLES:
+        # The target selector itself is part of CDCT's UI. Its main window
+        # and transient settings/dropdown windows must never be offered as
+        # audio-capture targets, even when a launcher process owns them.
+        if not title or title in _EXCLUDED_TITLES or title.casefold().startswith("cdct"):
             return True
 
         pid = wintypes.DWORD()
@@ -87,10 +102,11 @@ def list_open_windows() -> list[tuple[str, str, int]]:
         if pid.value == own_pid:
             return True
         try:
-            pname = psutil.Process(pid.value).name()
+            proc = psutil.Process(pid.value)
+            pname = proc.name()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return True
-        if pname.lower() in _EXCLUDED_PROCESSES:
+        if _is_cdct_process(proc) or pname.lower() in _EXCLUDED_PROCESSES:
             return True
 
         results.setdefault(pname, (title, pid.value))
@@ -300,7 +316,7 @@ class ProcessLoopbackRecorder:
         self._tap: "ProcessAudioCapture | None" = None
         self._accum_thread: "threading.Thread | None" = None
 
-    def _on_data(self, pcm: bytes, frames: int):
+    def _on_data(self, pcm: bytes, _frames: int):
         self._first_data.set()
         self._raw_q.put(pcm)
 

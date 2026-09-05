@@ -1,9 +1,8 @@
 """CDCT - CLI entry point.
 
-Captures the default Windows output device (WASAPI loopback) in rolling
-chunks, transcribes each chunk with faster-whisper, and appends timestamped
-lines to a markdown transcript as it goes. Works with any audio source, not
-tied to a specific application.
+Captures either a selected process or the default Windows output device in
+rolling chunks, transcribes each chunk with faster-whisper, and appends
+timestamped lines to a markdown transcript as it goes.
 
 Usage:
     venv\\Scripts\\python.exe main.py [--chunk-seconds 30] [--model small] [--target-process Zoom.exe]

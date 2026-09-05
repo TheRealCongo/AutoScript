@@ -1,8 +1,8 @@
 """CDCT (Call Data & Conversation Transcripts) - local voice-to-text dictation.
 
-Captures your PC's audio output and transcribes it live to a markdown file.
-Works with any audio source - a Discord/Zoom/Teams call, a video, or just
-your own voice - not tied to any single application.
+Captures either a selected program's audio or your PC's full output and
+transcribes it live to a markdown file. Works with a Discord/Zoom/Teams call,
+a video, or any other desktop audio source.
 
 Layout inspired by chat-app / call-transcript tools: a left sidebar with a
 wordmark and history of past sessions, and a main panel that's either the
@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -143,6 +144,22 @@ def _round_window_corners(win):
         pass
 
 
+def _mark_as_tool_window(win):
+    """Keep CDCT's transient panels out of taskbar/Alt-Tab/window enumeration."""
+    try:
+        win.attributes("-toolwindow", True)
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), 2)  # GA_ROOT
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ctypes.windll.user32.SetWindowLongW(
+            hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW
+        )
+    except Exception:
+        pass
+
+
 class Tooltip:
     """Small dark hover tooltip for a widget, matching the app's palette."""
 
@@ -174,6 +191,7 @@ class Tooltip:
         self._tip.wm_overrideredirect(True)
         self._tip.wm_geometry(f"+{x}+{y}")
         self._tip.attributes("-topmost", True)
+        _mark_as_tool_window(self._tip)
         tk.Label(
             self._tip,
             text=self.text,
@@ -229,6 +247,9 @@ class TranscriberApp(ctk.CTk):
         self.target_process_name: str | None = "Discord.exe"
         self.target_display_name = "Discord"
         self.target_pid: int | None = None
+        self.target_menu: ctk.CTkButton | None = None
+        self.target_dropdown: ctk.CTkToplevel | None = None
+        self._target_options: dict[str, tuple[str, str, int]] = {}
         self.active_capture_mode: str = "full"
         self.settings_popup = None
 
@@ -550,6 +571,7 @@ class TranscriberApp(ctk.CTk):
         popup.overrideredirect(True)
         popup.configure(fg_color=BG_CONTROL)
         popup.attributes("-topmost", True)
+        _mark_as_tool_window(popup)
         popup.grab_set()
 
         ctk.CTkLabel(
@@ -726,6 +748,11 @@ class TranscriberApp(ctk.CTk):
         popup.overrideredirect(True)
         popup.configure(fg_color=BG_CONTROL)
         popup.attributes("-topmost", True)
+        # The DPI-safe measurement below needs one initial map before it can
+        # know the popup's physical footprint. Keep that pass invisible so
+        # Settings appears only at its final aligned location.
+        popup.attributes("-alpha", 0.0)
+        _mark_as_tool_window(popup)
         _round_window_corners(popup)
 
         ctk.CTkLabel(
@@ -776,17 +803,18 @@ class TranscriberApp(ctk.CTk):
                 "either way, not only that program."
             ),
         )
-        self.target_btn = ctk.CTkButton(
+        self.target_menu = ctk.CTkButton(
             target_row,
             text=f"{self.target_display_name}  ▾",
-            command=self._open_target_picker,
-            anchor="w",
+            command=self._toggle_target_dropdown,
             fg_color=BG_SIDEBAR,
             hover_color=BG_SIDEBAR_HOVER,
-            text_color=FG_TEXT,
             font=app_font(12),
+            anchor="w",
+            text_color=FG_TEXT,
+            corner_radius=6,
         )
-        self.target_btn.pack(fill="x", pady=(4, 0))
+        self.target_menu.pack(fill="x", pady=(4, 0))
 
         keep_row = ctk.CTkFrame(popup, fg_color="transparent")
         keep_row.pack(fill="x", padx=16, pady=(0, 16))
@@ -829,15 +857,20 @@ class TranscriberApp(ctk.CTk):
 
         popup.geometry(f"{w}x{h}+{x}+{y}")
         _round_window_corners(popup)
+        popup.attributes("-alpha", 1.0)
 
         self.settings_popup = popup
+        self._refresh_target_options()
         self.bind_all("<Button-1>", self._maybe_close_settings, add="+")
 
     def _maybe_close_settings(self, event):
         popup = self.settings_popup
         if not popup or not popup.winfo_exists():
             return
-        for widget in (popup, self.gear_btn):
+        widgets = [popup, self.gear_btn]
+        if self.target_dropdown and self.target_dropdown.winfo_exists():
+            widgets.append(self.target_dropdown)
+        for widget in widgets:
             wx, wy = widget.winfo_rootx(), widget.winfo_rooty()
             ww, wh = widget.winfo_width(), widget.winfo_height()
             if wx <= event.x_root <= wx + ww and wy <= event.y_root <= wy + wh:
@@ -845,68 +878,113 @@ class TranscriberApp(ctk.CTk):
         self._close_settings_panel()
 
     def _close_settings_panel(self):
+        self._close_target_dropdown()
         if self.settings_popup and self.settings_popup.winfo_exists():
             self.settings_popup.destroy()
         self.settings_popup = None
+        self.target_menu = None
         self.unbind_all("<Button-1>")
 
-    def _open_target_picker(self):
-        popup = ctk.CTkToplevel(self)
-        popup.title("Select target program")
-        popup.geometry("360x420")
-        popup.configure(fg_color=BG_MAIN)
-        popup.transient(self)
-        popup.grab_set()
+    def _truncate_target_label(self, text: str, max_width: int) -> str:
+        """Return `text` shortened with an ellipsis to fit the menu's text area."""
+        font = tkfont.Font(family=FONT_FAMILY, size=12)
+        if font.measure(text) <= max_width:
+            return text
 
-        ctk.CTkLabel(
-            popup,
-            text="Open programs",
-            text_color=FG_MUTED,
-            font=app_font(11, "bold"),
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(14, 4))
+        ellipsis = "..."
+        while text and font.measure(text + ellipsis) > max_width:
+            text = text[:-1]
+        return text.rstrip() + ellipsis
 
-        scroll = ctk.CTkScrollableFrame(popup, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    def _refresh_target_options(self):
+        """Refresh the capture-target dropdown with visible applications."""
+        if not self.target_menu or not self.target_menu.winfo_exists():
+            return
 
-        windows = list_open_windows()
-        if not windows:
+        self.target_menu.update_idletasks()
+        # Reserve room for CustomTkinter's dropdown-arrow button and padding.
+        label_width = max(self.target_menu.winfo_width() - 54, 80)
+        options: dict[str, tuple[str, str, int]] = {}
+        for title, process_name, pid in list_open_windows():
+            label = self._truncate_target_label(title, label_width)
+            # A title collision is uncommon, but every choice still needs a
+            # unique backing value for CTkOptionMenu's callback.
+            if label in options:
+                label = self._truncate_target_label(
+                    f"{title} [{process_name}]", label_width
+                )
+            if label in options:
+                label = self._truncate_target_label(f"{title} [{pid}]", label_width)
+            options[label] = (title, process_name, pid)
+
+        self._target_options = options
+        selected_label = self._truncate_target_label(
+            self.target_display_name, label_width
+        )
+        self.target_menu.configure(text=f"{selected_label}  ▾")
+
+    def _toggle_target_dropdown(self):
+        if self.target_dropdown and self.target_dropdown.winfo_exists():
+            self._close_target_dropdown()
+            return
+
+        self._refresh_target_options()
+        if not self.target_menu or not self.target_menu.winfo_exists():
+            return
+
+        dropdown = ctk.CTkToplevel(self)
+        dropdown.overrideredirect(True)
+        dropdown.configure(fg_color=BG_CONTROL)
+        dropdown.attributes("-topmost", True)
+        dropdown.transient(self.settings_popup or self)
+        _mark_as_tool_window(dropdown)
+        _round_window_corners(dropdown)
+
+        content = ctk.CTkScrollableFrame(dropdown, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=6, pady=6)
+        if not self._target_options:
             ctk.CTkLabel(
-                scroll, text="No open windows found.", text_color=FG_FAINT, font=app_font(12)
-            ).pack(pady=10)
-        for title, pname, pid in windows:
-            label = title if len(title) <= 42 else title[:39] + "..."
-            btn = ctk.CTkButton(
-                scroll,
-                text=label,
-                anchor="w",
-                fg_color="transparent",
-                hover_color=BG_SIDEBAR_HOVER,
-                text_color=FG_TEXT,
+                content,
+                text="No open programs found.",
+                text_color=FG_FAINT,
                 font=app_font(12),
-                corner_radius=6,
-                height=36,
-                command=lambda t=title, p=pname, pid=pid: self._pick_target(t, p, pid, popup),
-            )
-            btn.pack(fill="x", pady=2)
+            ).pack(padx=10, pady=10)
+        else:
+            for label, (title, process_name, pid) in self._target_options.items():
+                ctk.CTkButton(
+                    content,
+                    text=label,
+                    anchor="w",
+                    command=lambda t=title, p=process_name, i=pid: self._pick_target(t, p, i),
+                    fg_color="transparent",
+                    hover_color=BG_SIDEBAR_HOVER,
+                    text_color=FG_TEXT,
+                    font=app_font(12),
+                    corner_radius=5,
+                    height=32,
+                ).pack(fill="x", pady=1)
 
-        ctk.CTkButton(
-            popup,
-            text="Cancel",
-            command=popup.destroy,
-            fg_color=BG_CONTROL,
-            hover_color=BG_CONTROL_HOVER,
-            width=90,
-            font=app_font(12),
-        ).pack(pady=(0, 12))
+        dropdown.update_idletasks()
+        logical_width = self.target_menu.winfo_reqwidth()
+        logical_height = min(dropdown.winfo_reqheight(), 250)
+        x = self.target_menu.winfo_rootx()
+        y = self.target_menu.winfo_rooty() + self.target_menu.winfo_height() + 4
+        dropdown.geometry(f"{logical_width}x{logical_height}+{x}+{y}")
+        _round_window_corners(dropdown)
+        self.target_dropdown = dropdown
 
-    def _pick_target(self, title: str, process_name: str, pid: int, popup):
+    def _close_target_dropdown(self):
+        if self.target_dropdown and self.target_dropdown.winfo_exists():
+            self.target_dropdown.destroy()
+        self.target_dropdown = None
+
+    def _pick_target(self, title: str, process_name: str, pid: int):
         self.target_process_name = process_name
         self.target_pid = pid
-        display = title if len(title) <= 22 else title[:19] + "..."
-        self.target_display_name = display
-        self.target_btn.configure(text=f"{display}  ▾")
-        popup.destroy()
+        self.target_display_name = title
+        if self.target_menu and self.target_menu.winfo_exists():
+            self._refresh_target_options()
+        self._close_target_dropdown()
 
     def start(self):
         if self.running:
@@ -1013,6 +1091,7 @@ class TranscriberApp(ctk.CTk):
         popup.overrideredirect(True)
         popup.configure(fg_color=BG_CONTROL)
         popup.attributes("-topmost", True)
+        _mark_as_tool_window(popup)
         popup.grab_set()
 
         ctk.CTkLabel(
