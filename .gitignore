@@ -6,3 +6,7 @@ transcripts/
 __pycache__/
 *.pyc
 *.spec
+
+# Local release-upload convenience copy; distribute it through GitHub Releases,
+# never through the source repository.
+CDCT.exe
