@@ -3,3 +3,4 @@ pyaudiowpatch
 psutil
 numpy
 customtkinter
+proc-tap==1.1.1

@@ -31,7 +31,14 @@ import customtkinter as ctk
 from PIL import Image
 from tkinter import filedialog, messagebox
 
-from capture import LoopbackRecorder, list_open_windows, process_running
+from capture import (
+    LoopbackRecorder,
+    PROC_TAP_AVAILABLE,
+    ProcessLoopbackRecorder,
+    list_open_windows,
+    make_recorder,
+    process_running,
+)
 
 # transcriber.py pulls in faster-whisper -> ctranslate2/onnxruntime/av, which
 # together take ~2s+ to import in a frozen build (vs ~0.2s from source) -
@@ -85,13 +92,22 @@ ACCENT_HOVER = "#0654AD"
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
 
-WELCOME_TEXT = (
-    "Pick a model and hit Start to transcribe.\n\n"
-    "This captures your PC's full speaker output, not just the program "
-    "picked in \"Capturing for\" - close or mute anything else making "
-    "sound first.\n\n"
-    "Not sure what a setting does? Hover over it to find out."
-)
+if PROC_TAP_AVAILABLE:
+    WELCOME_TEXT = (
+        "Pick a model and hit Start to transcribe.\n\n"
+        "Pick a program in \"Capturing for\" to capture just that program's "
+        "audio, when possible - otherwise CDCT captures your full speaker "
+        "output.\n\n"
+        "Not sure what a setting does? Hover over it to find out."
+    )
+else:
+    WELCOME_TEXT = (
+        "Pick a model and hit Start to transcribe.\n\n"
+        "This captures your PC's full speaker output, not just the program "
+        "picked in \"Capturing for\" - close or mute anything else making "
+        "sound first.\n\n"
+        "Not sure what a setting does? Hover over it to find out."
+    )
 
 TS_LINE_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
 TIME_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
@@ -193,7 +209,7 @@ class TranscriberApp(ctk.CTk):
             except Exception:
                 pass
 
-        self.recorder: LoopbackRecorder | None = None
+        self.recorder: LoopbackRecorder | ProcessLoopbackRecorder | None = None
         self.worker: TranscriptionWorker | None = None
         self.transcript_path: Path | None = None
         self.line_queue: "queue.Queue[str]" = queue.Queue()
@@ -212,6 +228,8 @@ class TranscriberApp(ctk.CTk):
         self.keep_audio_var = ctk.BooleanVar(value=False)
         self.target_process_name: str | None = "Discord.exe"
         self.target_display_name = "Discord"
+        self.target_pid: int | None = None
+        self.active_capture_mode: str = "full"
         self.settings_popup = None
 
         self._build_sidebar()
@@ -748,9 +766,15 @@ class TranscriberApp(ctk.CTk):
 
         target_row = setting_row(
             "Capturing for",
-            "Which open program you're calling in. This is just a check that it's "
-            "open before you hit Start - it still records your whole speaker output "
-            "either way, not only that program.",
+            (
+                "Only this program's audio will be captured and transcribed, when "
+                "possible. If it can't be isolated, CDCT will ask before falling "
+                "back to capturing everything."
+            ) if PROC_TAP_AVAILABLE else (
+                "Which open program you're calling in. This is just a check that it's "
+                "open before you hit Start - it still records your whole speaker output "
+                "either way, not only that program."
+            ),
         )
         self.target_btn = ctk.CTkButton(
             target_row,
@@ -850,7 +874,7 @@ class TranscriberApp(ctk.CTk):
             ctk.CTkLabel(
                 scroll, text="No open windows found.", text_color=FG_FAINT, font=app_font(12)
             ).pack(pady=10)
-        for title, pname in windows:
+        for title, pname, pid in windows:
             label = title if len(title) <= 42 else title[:39] + "..."
             btn = ctk.CTkButton(
                 scroll,
@@ -862,7 +886,7 @@ class TranscriberApp(ctk.CTk):
                 font=app_font(12),
                 corner_radius=6,
                 height=36,
-                command=lambda t=title, p=pname: self._pick_target(t, p, popup),
+                command=lambda t=title, p=pname, pid=pid: self._pick_target(t, p, pid, popup),
             )
             btn.pack(fill="x", pady=2)
 
@@ -876,8 +900,9 @@ class TranscriberApp(ctk.CTk):
             font=app_font(12),
         ).pack(pady=(0, 12))
 
-    def _pick_target(self, title: str, process_name: str, popup):
+    def _pick_target(self, title: str, process_name: str, pid: int, popup):
         self.target_process_name = process_name
+        self.target_pid = pid
         display = title if len(title) <= 22 else title[:19] + "..."
         self.target_display_name = display
         self.target_btn.configure(text=f"{display}  ▾")
@@ -907,13 +932,53 @@ class TranscriberApp(ctk.CTk):
             self.after(
                 0,
                 lambda: self.status_var.set(
-                    f"{target_label} not detected - capturing full output anyway"
+                    f"{target_label} not detected - capture may not isolate its audio"
                 ),
             )
 
+        # Probe capture mode before any other side effects (transcript file,
+        # model load) so a Cancel in the fallback dialog below costs nothing.
+        chunk_q: "queue.Queue" = queue.Queue()
+        try:
+            recorder, mode, reason = make_recorder(
+                chunk_seconds,
+                CHUNKS_DIR,
+                chunk_q,
+                target_pid=self.target_pid,
+                on_error=self._on_capture_error,
+            )
+        except Exception as exc:
+            self.after(0, lambda: self.status_var.set(f"Capture failed: {exc}"))
+            self.after(0, self._reset_buttons)
+            return
+
+        opening_note = None
+        if mode == "full" and self.target_pid is not None:
+            # Isolation was requested but couldn't be achieved - hard-stop and
+            # ask rather than silently recording everything, so the tool stays
+            # honest about what it's actually capturing.
+            decision = {"proceed": None}
+            confirmed = threading.Event()
+            self.after(
+                0,
+                lambda: self._show_capture_fallback_dialog(target_label, reason, decision, confirmed),
+            )
+            confirmed.wait()
+            if not decision["proceed"]:
+                try:
+                    recorder.stop()
+                except Exception:
+                    pass
+                self.after(0, self._reset_buttons)
+                return
+            opening_note = f"**[Capturing full system output — could not isolate {target_label} ({reason})]**\n\n"
+
+        self.active_capture_mode = mode
+
         today = date.today().isoformat()
         self.transcript_path = TRANSCRIPTS_DIR / f"transcript_{today}_{int(time.time())}.md"
-        self.transcript_path.write_text(f"## Transcript — {today}\n\n", encoding="utf-8")
+        header = f"## Transcript — {today}\n\n" + (opening_note or "")
+        self.transcript_path.write_text(header, encoding="utf-8")
         self.after(0, self._refresh_history)
         self.after(0, lambda: self.file_var.set(str(self.transcript_path)))
 
@@ -921,20 +986,15 @@ class TranscriberApp(ctk.CTk):
             model, device = load_model(self.model_var.get().lower())
         except Exception as exc:
             self.after(0, lambda: self.status_var.set(f"Model load failed: {exc}"))
+            try:
+                recorder.stop()
+            except Exception:
+                pass
             self.after(0, self._reset_buttons)
             return
         self.after(0, lambda: self.status_var.set(f"Model '{self.model_var.get()}' on {device}"))
 
-        chunk_q: "queue.Queue" = queue.Queue()
-        try:
-            self.recorder = LoopbackRecorder(
-                chunk_seconds, CHUNKS_DIR, chunk_q, on_error=self._on_capture_error
-            )
-        except Exception as exc:
-            self.after(0, lambda: self.status_var.set(f"Capture failed: {exc}"))
-            self.after(0, self._reset_buttons)
-            return
-
+        self.recorder = recorder
         self.worker = TranscriptionWorker(
             model,
             chunk_q,
@@ -948,8 +1008,66 @@ class TranscriberApp(ctk.CTk):
         self.running = True
         self.after(0, self._on_recording_started)
 
+    def _show_capture_fallback_dialog(self, target_display_name: str, reason: str, decision: dict, confirmed: threading.Event):
+        popup = ctk.CTkToplevel(self)
+        popup.overrideredirect(True)
+        popup.configure(fg_color=BG_CONTROL)
+        popup.attributes("-topmost", True)
+        popup.grab_set()
+
+        ctk.CTkLabel(
+            popup,
+            text=f"Couldn't isolate {target_display_name}'s audio ({reason}).",
+            text_color=FG_TEXT,
+            font=app_font(13, "bold"),
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(14, 6))
+
+        ctk.CTkLabel(
+            popup,
+            text="Start recording full system audio instead?",
+            text_color=FG_MUTED,
+            font=app_font(12),
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 14))
+
+        def resolve(proceed: bool):
+            decision["proceed"] = proceed
+            confirmed.set()
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", lambda: resolve(False))
+
+        btn_row = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_row.pack(padx=16, pady=(0, 14))
+        ctk.CTkButton(
+            btn_row, text="Cancel", command=lambda: resolve(False), fg_color=BG_SIDEBAR,
+            hover_color=BG_SIDEBAR_HOVER, width=110, font=app_font(12),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row, text="Capture Everything Instead", command=lambda: resolve(True),
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, width=190, font=app_font(12),
+        ).pack(side="left")
+
+        # DPI-scaling-safe two-pass measure-then-clamp positioning - see
+        # _rename_transcript for the same pattern and why it's needed.
+        popup.update()
+        w = popup.winfo_reqwidth()
+        h = popup.winfo_reqheight()
+        popup.geometry(f"{w}x{h}+0+0")
+        popup.update()
+        actual_w = popup.winfo_width()
+        actual_h = popup.winfo_height()
+        x = self.winfo_rootx() + (self.winfo_width() - actual_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - actual_h) // 2
+        popup.geometry(f"{w}x{h}+{x}+{y}")
+        _round_window_corners(popup)
+
     def _on_recording_started(self):
-        self.status_var.set("Recording...")
+        detail = " — full system output" if self.active_capture_mode == "full" else f" — {self.target_display_name} only"
+        self.status_var.set(f"Recording...{detail}")
         self.title_var.set("Recording...")
         self.title("CDCT - Recording")
         self.stop_btn.configure(state="normal")

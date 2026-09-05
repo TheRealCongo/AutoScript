@@ -16,12 +16,28 @@ import time
 from datetime import date
 from pathlib import Path
 
-from capture import LoopbackRecorder, process_running
+import psutil
+
+from capture import make_recorder
 from transcriber import TranscriptionWorker, load_model
 
 ROOT = Path(__file__).parent
 CHUNKS_DIR = ROOT / "chunks"
 TRANSCRIPTS_DIR = ROOT / "transcripts"
+
+
+def _resolve_pid(process_name: str) -> "int | None":
+    """First running process matching `process_name` by exe name, or None."""
+    target = process_name.strip().lower()
+    if not target.endswith(".exe"):
+        target += ".exe"
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if proc.info["name"] and proc.info["name"].lower() == target:
+                return proc.pid
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
 
 
 def main():
@@ -36,19 +52,23 @@ def main():
     parser.add_argument(
         "--target-process",
         default=None,
-        help="Optional process name (e.g. Discord.exe) to check is running before recording "
-             "starts. Purely informational - capture always covers the full output device.",
+        help="Optional process name (e.g. Discord.exe) whose audio to isolate. Falls back "
+             "to capturing the full output device (with a warning printed) if it can't be "
+             "isolated - see capture.py's ProcessLoopbackRecorder for why that can happen.",
     )
     args = parser.parse_args()
 
     CHUNKS_DIR.mkdir(exist_ok=True)
     TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 
-    if args.target_process and not process_running(args.target_process):
-        print(
-            f"[WARN] {args.target_process} not detected. Capturing default output device "
-            "regardless - anything else playing audio will bleed into the transcript."
-        )
+    target_pid = None
+    if args.target_process:
+        target_pid = _resolve_pid(args.target_process)
+        if target_pid is None:
+            print(
+                f"[WARN] {args.target_process} not detected. Capturing default output device "
+                "regardless - anything else playing audio will bleed into the transcript."
+            )
 
     today = date.today().isoformat()
     transcript_path = TRANSCRIPTS_DIR / f"transcript_{today}_{int(time.time())}.md"
@@ -61,8 +81,13 @@ def main():
 
     chunk_q: "queue.Queue" = queue.Queue()
 
-    recorder = LoopbackRecorder(args.chunk_seconds, CHUNKS_DIR, chunk_q)
-    print(f"[INFO] Capturing loopback device: {recorder.device['name']}")
+    recorder, mode, reason = make_recorder(args.chunk_seconds, CHUNKS_DIR, chunk_q, target_pid=target_pid)
+    if mode == "process":
+        print(f"[INFO] Capturing isolated audio for {args.target_process} (pid {target_pid})")
+    else:
+        if target_pid is not None and reason:
+            print(f"[WARN] Could not isolate {args.target_process}'s audio ({reason}) - capturing full system output instead.")
+        print(f"[INFO] Capturing loopback device: {recorder.device['name']}")
 
     worker = TranscriptionWorker(
         model, chunk_q, transcript_path, delete_chunks=not args.keep_audio

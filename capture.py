@@ -1,10 +1,11 @@
 """WASAPI loopback audio capture, chunked to rolling WAV files.
 
-Captures the full default output device mix, not a single process's audio.
-True per-process loopback (AUDIOCLIENT_ACTIVATION_PARAMS / PROCESS_LOOPBACK)
-has no mature Python wrapper - it requires implementing a COM async
-activation callback by hand via ctypes, which no library here does. See
-README for the practical implication (mute other audio sources first).
+Two capture paths: `LoopbackRecorder` captures the full default output
+device mix; `ProcessLoopbackRecorder` isolates a single process's audio via
+Windows' WASAPI process-loopback API (AUDIOCLIENT_ACTIVATION_PARAMS /
+PROCESS_LOOPBACK), wrapped by the third-party `proc-tap` package rather than
+hand-rolled here. `make_recorder()` is the single entry point that picks
+between them and reports which one it actually built.
 """
 import ctypes
 import os
@@ -15,8 +16,21 @@ import wave
 from ctypes import wintypes
 from pathlib import Path
 
+import numpy as np
 import psutil
 import pyaudiowpatch as pyaudio
+
+try:
+    from proctap import ProcessAudioCapture
+    PROC_TAP_AVAILABLE = True
+except Exception:      # broad on purpose - a native-extension load failure can surface as OSError
+    PROC_TAP_AVAILABLE = False
+
+# proc-tap always delivers this fixed format regardless of the source
+# device - it's not derived per-capture the way LoopbackRecorder's is.
+PROC_TAP_SAMPLE_RATE = 48000
+PROC_TAP_CHANNELS = 2
+PROC_TAP_BYTES_PER_FRAME = PROC_TAP_CHANNELS * 4  # float32
 
 _user32 = ctypes.windll.user32
 _GWL_EXSTYLE = -20
@@ -30,14 +44,23 @@ _EXCLUDED_PROCESSES = {"searchhost.exe", "shellexperiencehost.exe", "textinputho
                         "startmenuexperiencehost.exe"}
 
 
-def list_open_windows() -> list[tuple[str, str]]:
+def list_open_windows() -> list[tuple[str, str, int]]:
     """Enumerates visible top-level windows with a taskbar presence.
 
-    Returns a sorted list of (window_title, process_name) pairs, deduped by
-    process name (keeps whichever window title was seen first per process).
-    Excludes this app's own process and common shell/system windows.
+    Returns a sorted list of (window_title, process_name, pid) tuples, deduped
+    by process name (keeps whichever window/pid was seen first per process -
+    a second window of an already-seen exe, e.g. a second browser window, is
+    not offered as a separate target). Excludes this app's own process and
+    common shell/system windows.
+
+    The pid is the *main window's* owning process, which for multi-process
+    apps (browsers, Discord) is not necessarily the process actually playing
+    audio - but Windows' PROCESS_LOOPBACK capture defaults to including the
+    whole descendant process tree of the pid it's given, so targeting this
+    pid still isolates the right audio in practice (verified against a real
+    multi-process Chromium instance; see cdct_proctap_spike memory).
     """
-    results: dict[str, str] = {}
+    results: dict[str, tuple[str, int]] = {}
     own_pid = os.getpid()
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
@@ -70,12 +93,12 @@ def list_open_windows() -> list[tuple[str, str]]:
         if pname.lower() in _EXCLUDED_PROCESSES:
             return True
 
-        results.setdefault(pname, title)
+        results.setdefault(pname, (title, pid.value))
         return True
 
     _user32.EnumWindows(callback, 0)
     return sorted(
-        ((title, pname) for pname, title in results.items()),
+        ((title, pname, pid) for pname, (title, pid) in results.items()),
         key=lambda kv: kv[0].lower(),
     )
 
@@ -238,3 +261,161 @@ class LoopbackRecorder:
                 self._pa.terminate()
             except Exception:
                 pass
+
+
+# How often the accumulator checks whether the target process has exited.
+# proc-tap's backend never surfaces this on its own - it just keeps streaming
+# silence forever for a dead/nonexistent pid (verified empirically, see
+# cdct_proctap_spike memory) - so this is the only way to detect it.
+LIVENESS_CHECK_INTERVAL = 2.0
+
+
+class ProcessLoopbackRecorder:
+    """Records a single process's audio (via `proc-tap`'s WASAPI process-
+    loopback backend) in rolling chunks, mirroring `LoopbackRecorder`'s
+    public surface so callers don't need to know which one they have.
+
+    proc-tap's own callback runs on its internal capture thread and must
+    stay cheap (no file I/O) - it just hands raw float32 PCM off to a queue
+    that a separate accumulator thread turns into chunk_seconds-sized WAV
+    files, same shape as `LoopbackRecorder._run()`.
+    """
+
+    def __init__(
+        self,
+        chunk_seconds: int,
+        out_dir: Path,
+        chunk_queue: "queue.Queue",
+        pid: int,
+        on_error=None,
+    ):
+        self.chunk_seconds = chunk_seconds
+        self.out_dir = out_dir
+        self.chunk_queue = chunk_queue
+        self.pid = pid
+        self.on_error = on_error
+        self._raw_q: "queue.SimpleQueue" = queue.SimpleQueue()
+        self._first_data = threading.Event()
+        self._stop = threading.Event()
+        self._tap: "ProcessAudioCapture | None" = None
+        self._accum_thread: "threading.Thread | None" = None
+
+    def _on_data(self, pcm: bytes, frames: int):
+        self._first_data.set()
+        self._raw_q.put(pcm)
+
+    def probe(self, timeout: float) -> bool:
+        """Starts the real tap + accumulator, blocks up to `timeout`s for the
+        first callback. False (or an exception raised out of here) means the
+        caller must `.stop()` this and fall back."""
+        self._tap = ProcessAudioCapture(pid=self.pid, on_data=self._on_data, resample_quality="best")
+        self._tap.start()
+        self._accum_thread = threading.Thread(target=self._accumulate, daemon=True)
+        self._accum_thread.start()
+        return self._first_data.wait(timeout)
+
+    def start(self):
+        if self._tap is None:
+            self.probe(timeout=0)
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._tap is not None:
+                self._tap.close()
+        except Exception:
+            pass
+        if self._accum_thread:
+            self._accum_thread.join(timeout=self.chunk_seconds + 10)
+
+    def _write_chunk(self, raw_bytes: bytes, chunk_start_wall: float):
+        float_samples = np.frombuffer(raw_bytes, dtype=np.float32)
+        clipped = np.clip(float_samples, -1.0, 1.0)
+        int16_samples = (clipped * 32767.0).astype(np.int16)
+
+        chunk_path = self.out_dir / f"chunk_{int(chunk_start_wall)}.wav"
+        with wave.open(str(chunk_path), "wb") as wf:
+            wf.setnchannels(PROC_TAP_CHANNELS)
+            wf.setsampwidth(2)
+            wf.setframerate(PROC_TAP_SAMPLE_RATE)
+            wf.writeframes(int16_samples.tobytes())
+
+        self.chunk_queue.put((chunk_path, chunk_start_wall))
+
+    def _accumulate(self):
+        bytes_needed = int(PROC_TAP_SAMPLE_RATE * self.chunk_seconds) * PROC_TAP_BYTES_PER_FRAME
+        buf = bytearray()
+        chunk_start_wall = time.time()
+        last_liveness_check = time.time()
+
+        while not self._stop.is_set():
+            try:
+                pcm = self._raw_q.get(timeout=0.5)
+            except queue.Empty:
+                pcm = None
+
+            now = time.time()
+            if now - last_liveness_check >= LIVENESS_CHECK_INTERVAL:
+                last_liveness_check = now
+                if not psutil.pid_exists(self.pid):
+                    if self.on_error:
+                        self.on_error(
+                            "The program being captured has closed - stopped recording its audio.",
+                            True,
+                        )
+                    return
+
+            if pcm is None:
+                continue
+
+            buf.extend(pcm)
+            if len(buf) >= bytes_needed:
+                chunk_bytes = bytes(buf[:bytes_needed])
+                del buf[:bytes_needed]
+                self._write_chunk(chunk_bytes, chunk_start_wall)
+                chunk_start_wall = time.time()
+
+        # mirrors LoopbackRecorder._run()'s behavior of flushing a final
+        # partial chunk on a clean stop rather than discarding it
+        if buf:
+            self._write_chunk(bytes(buf), chunk_start_wall)
+
+
+def make_recorder(
+    chunk_seconds: int,
+    out_dir: Path,
+    chunk_queue: "queue.Queue",
+    target_pid: "int | None" = None,
+    on_error=None,
+    probe_timeout: float = 2.5,
+):
+    """Single construction path for both recorder types.
+
+    Returns (recorder, mode, reason): mode is "process" or "full"; reason is
+    None on success, else a short human-readable string explaining why
+    per-process isolation wasn't used, for the caller to show the user
+    before silently falling back to full-device capture.
+    """
+    if target_pid is None:
+        return LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", None
+
+    if not PROC_TAP_AVAILABLE:
+        return (
+            LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error),
+            "full",
+            "per-process capture unavailable on this build",
+        )
+
+    candidate = ProcessLoopbackRecorder(chunk_seconds, out_dir, chunk_queue, target_pid, on_error=on_error)
+    try:
+        if candidate.probe(probe_timeout):
+            return candidate, "process", None
+        reason = "no audio activity detected from that program"
+    except Exception as exc:
+        reason = str(exc)
+
+    try:
+        candidate.stop()
+    except Exception:
+        pass
+    return LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", reason

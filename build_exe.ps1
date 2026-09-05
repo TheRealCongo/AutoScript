@@ -15,6 +15,7 @@ if ($LASTEXITCODE -ne 0) {
   --collect-all av `
   --collect-all onnxruntime `
   --collect-all pyaudiowpatch `
+  --collect-all proctap `
   --collect-all customtkinter `
   --collect-data faster_whisper `
   --collect-data tokenizers `
