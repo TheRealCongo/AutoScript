@@ -10,3 +10,4 @@ __pycache__/
 # Local release-upload convenience copy; distribute it through GitHub Releases,
 # never through the source repository.
 CDCT.exe
+AutoScript.exe
