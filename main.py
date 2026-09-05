@@ -1,4 +1,4 @@
-"""CDCT - CLI entry point.
+"""AutoScript - CLI entry point.
 
 Captures either a selected process or the default Windows output device in
 rolling chunks, transcribes each chunk with faster-whisper, and appends

@@ -1,6 +1,8 @@
-# CDCT — Call Data & Conversation Transcripts
+# AutoScript — Local Voice to Text
 
-CDCT is a local Windows app that captures audio and writes a live,
+> **Note:** AutoScript was previously named CDCT. This is a branding update; the project remains local-first, open source, and functionally continuous.
+
+AutoScript is a local Windows app that captures audio and writes a live,
 timestamped markdown transcript. It works with calls, videos, and other
 desktop audio; it is not tied to Discord, Zoom, or any single service.
 
@@ -10,28 +12,28 @@ already installed.
 
 ## Capture modes
 
-CDCT has two explicit capture modes:
+AutoScript has two explicit capture modes:
 
 - **A selected program** — choose an open program under the Settings gear's
-  **Capturing for** dropdown. CDCT uses Windows WASAPI process loopback to
+  **Capturing for** dropdown. AutoScript uses Windows WASAPI process loopback to
   capture that process and its child processes only. This is the right choice
   for a Discord call, browser video, or media player when other apps are also
   making sound.
 - **Full system output** — leave the default target unchanged, or explicitly
-  choose to capture everything if CDCT cannot isolate the selected program.
+  choose to capture everything if AutoScript cannot isolate the selected program.
 
-CDCT never silently changes an attempted per-program capture into a
+AutoScript never silently changes an attempted per-program capture into a
 full-system recording. If isolation cannot start, it explains why and offers
 **Cancel** or **Capture Everything Instead**.
 
-The target list contains normal user-facing apps only. CDCT's own windows and
+The target list contains normal user-facing apps only. AutoScript's own windows and
 Windows system shell/settings windows are excluded.
 
 ### Important scope
 
 Isolation is by **process**, not individual window or speaker. Two windows of
 the same browser can share a process tree and therefore cannot be separated
-from each other. CDCT also does not identify who spoke; it transcribes the
+from each other. AutoScript also does not identify who spoke; it transcribes the
 audio that the selected process produces.
 
 ## How it works
@@ -40,15 +42,15 @@ audio that the selected process produces.
    or the default output-device mix into rolling WAV chunks.
 2. **Transcribe** — `transcriber.py` sends finished chunks to
    [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA is used
-   when available; otherwise CDCT uses CPU automatically.
+   when available; otherwise AutoScript uses CPU automatically.
 3. **Output** — timestamped segments are appended live to a markdown file.
 
-## Using CDCT
+## Using AutoScript
 
-- **Standalone app:** download `CDCT.exe` from the
+- **Standalone app:** download `AutoScript.exe` from the
   [Releases](../../releases) page. No Python installation is needed.
 - **First run:** choose where transcripts and optional audio chunks should be
-  stored. CDCT remembers that location.
+  stored. AutoScript remembers that location.
 - **Settings:** use the gear in the sidebar to choose the Whisper model,
   chunk length, capture target, optional plugins, and whether to retain WAV
   chunks after transcription.
@@ -93,7 +95,7 @@ output.
 .\build_exe.ps1
 ```
 
-This produces `dist\CDCT.exe` with the required native capture and
+This produces `dist\AutoScript.exe` with the required native capture and
 transcription dependencies bundled. GPU acceleration additionally requires
 the relevant NVIDIA CUDA libraries in the build environment; CPU fallback is
 automatic.

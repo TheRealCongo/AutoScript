@@ -1,10 +1,10 @@
-"""Public API for optional CDCT plugins.
+"""Public API for optional AutoScript plugins.
 
-Plugins are kept outside the CDCT executable.  A plugin directory contains a
+Plugins are kept outside the AutoScript executable.  A plugin directory contains a
 ``plugin.json`` manifest and the Python module named by its ``entry_point``.
-CDCT deliberately keeps this contract small: plugins have a lifecycle today;
+AutoScript deliberately keeps this contract small: plugins have a lifecycle today;
 future capture plugins will use the audio types below without needing access to
-CDCT's private GUI or recorder implementation.
+AutoScript's private GUI or recorder implementation.
 """
 from __future__ import annotations
 
@@ -37,14 +37,14 @@ class PluginContext:
     log: Callable[[str], None]
 
 
-class CDCTPlugin(Protocol):
+class ASPlugin(Protocol):
     """The optional lifecycle implemented by a plugin entry-point class."""
 
     def activate(self, context: PluginContext) -> None:
         """Start the plugin after the user enables it."""
 
     def deactivate(self) -> None:
-        """Stop the plugin before CDCT disables or exits."""
+        """Stop the plugin before AutoScript disables or exits."""
 
     def open_settings(self, parent) -> None:
-        """Optionally open this plugin's configuration UI inside CDCT."""
+        """Optionally open this plugin's configuration UI inside AutoScript."""

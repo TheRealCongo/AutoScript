@@ -45,10 +45,10 @@ _EXCLUDED_PROCESSES = {"searchhost.exe", "shellexperiencehost.exe", "textinputho
                         "applicationframehost.exe"}
 
 
-def _is_cdct_process(proc: psutil.Process) -> bool:
-    """Whether `proc` belongs to a source or packaged CDCT instance."""
+def _is_as_process(proc: psutil.Process) -> bool:
+    """Whether `proc` belongs to AutoScript or its legacy executable name."""
     try:
-        if proc.name().casefold() == "cdct.exe":
+        if proc.name().casefold() in {"autoscript.exe", "cdct.exe"}:
             return True
         command = " ".join(proc.cmdline()).casefold()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -62,7 +62,7 @@ def list_open_windows() -> list[tuple[str, str, int]]:
     Returns a sorted list of (window_title, process_name, pid) tuples, deduped
     by process name (keeps whichever window/pid was seen first per process -
     a second window of an already-seen exe, e.g. a second browser window, is
-    not offered as a separate target). Excludes every CDCT instance plus
+    not offered as a separate target). Excludes every AutoScript instance plus
     common shell/system windows.
 
     The pid is the *main window's* owning process, which for multi-process
@@ -70,7 +70,7 @@ def list_open_windows() -> list[tuple[str, str, int]]:
     audio - but Windows' PROCESS_LOOPBACK capture defaults to including the
     whole descendant process tree of the pid it's given, so targeting this
     pid still isolates the right audio in practice (verified against a real
-    multi-process Chromium instance; see cdct_proctap_spike memory).
+    multi-process Chromium instance; see autoscript_proctap_spike memory).
     """
     results: dict[str, tuple[str, int]] = {}
     own_pid = os.getpid()
@@ -91,10 +91,10 @@ def list_open_windows() -> list[tuple[str, str, int]]:
         buf = ctypes.create_unicode_buffer(length + 1)
         _user32.GetWindowTextW(hwnd, buf, length + 1)
         title = buf.value.strip()
-        # The target selector itself is part of CDCT's UI. Its main window
+        # The target selector itself is part of AutoScript's UI. Its main window
         # and transient settings/dropdown windows must never be offered as
         # audio-capture targets, even when a launcher process owns them.
-        if not title or title in _EXCLUDED_TITLES or title.casefold().startswith("cdct"):
+        if not title or title in _EXCLUDED_TITLES or title.casefold().startswith(("autoscript", "cdct")):
             return True
 
         pid = wintypes.DWORD()
@@ -106,7 +106,7 @@ def list_open_windows() -> list[tuple[str, str, int]]:
             pname = proc.name()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return True
-        if _is_cdct_process(proc) or pname.lower() in _EXCLUDED_PROCESSES:
+        if _is_as_process(proc) or pname.lower() in _EXCLUDED_PROCESSES:
             return True
 
         results.setdefault(pname, (title, pid.value))
@@ -282,7 +282,7 @@ class LoopbackRecorder:
 # How often the accumulator checks whether the target process has exited.
 # proc-tap's backend never surfaces this on its own - it just keeps streaming
 # silence forever for a dead/nonexistent pid (verified empirically, see
-# cdct_proctap_spike memory) - so this is the only way to detect it.
+# autoscript_proctap_spike memory) - so this is the only way to detect it.
 LIVENESS_CHECK_INTERVAL = 2.0
 
 

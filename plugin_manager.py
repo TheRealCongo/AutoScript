@@ -125,7 +125,7 @@ class PluginManager:
         requested_api = manifest.get("api_version")
         if requested_api != PLUGIN_API_VERSION:
             record.status = "Incompatible"
-            record.detail = f"Needs plugin API {requested_api}; CDCT provides {PLUGIN_API_VERSION}."
+            record.detail = f"Needs plugin API {requested_api}; AutoScript provides {PLUGIN_API_VERSION}."
         elif plugin_id in self._enabled_ids:
             record.enabled = True
             record.status = "Ready"
@@ -161,10 +161,10 @@ class PluginManager:
                 raise ValueError("Entry point must name a Python file inside this plugin folder.")
             # A downloadable plugin may bundle its Python dependencies in a
             # private ``lib`` directory, keeping optional dependencies out of
-            # CDCT's base executable and requirements file.
+            # AutoScript's base executable and requirements file.
             # Some optional Windows-only plugin dependencies (notably
             # pywin32) ship extension modules in a sibling runtime folder.
-            # Make that private runtime available without affecting CDCT's
+            # Make that private runtime available without affecting AutoScript's
             # base dependency set.
             for import_root in (
                 record.folder / "lib" / "pywin32_system32",
@@ -176,7 +176,7 @@ class PluginManager:
             ):
                 if import_root.is_dir() and str(import_root) not in sys.path:
                     sys.path.insert(0, str(import_root))
-            module_name = f"cdct_plugin_{record.plugin_id.replace('-', '_').replace('.', '_')}"
+            module_name = f"as_plugin_{record.plugin_id.replace('-', '_').replace('.', '_')}"
             spec = importlib.util.spec_from_file_location(module_name, source)
             if not spec or not spec.loader:
                 raise ImportError("Could not load the entry point.")

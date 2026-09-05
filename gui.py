@@ -1,4 +1,4 @@
-"""CDCT (Call Data & Conversation Transcripts) - local voice-to-text dictation.
+"""AutoScript - local voice-to-text dictation.
 
 Captures either a selected program's audio or your PC's full output and
 transcribes it live to a markdown file. Works with a Discord/Zoom/Teams call,
@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -58,7 +59,7 @@ else:
 
 # ``ROOT`` becomes the user-selected data directory after first-run setup.
 # Keep the install folder separate: downloadable plugins always live beside
-# CDCT.exe, regardless of where a user stores their transcripts.
+# AutoScript.exe, regardless of where a user stores their transcripts.
 APP_DIR = ROOT
 
 CHUNKS_DIR = ROOT / "chunks"
@@ -72,7 +73,8 @@ APP_VERSION = "2.1.0"
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
 # otherwise there'd be nowhere reliable to remember that choice from.
-CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "CDCT"
+CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "AutoScript"
+LEGACY_CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "CDCT"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 FONT_FAMILY = "Cascadia Mono"
@@ -104,7 +106,7 @@ if PROC_TAP_AVAILABLE:
     WELCOME_TEXT = (
         "Pick a model and hit Start to transcribe.\n\n"
         "Pick a program in \"Capturing for\" to capture just that program's "
-        "audio, when possible - otherwise CDCT captures your full speaker "
+        "audio, when possible - otherwise AutoScript captures your full speaker "
         "output.\n\n"
         "Not sure what a setting does? Hover over it to find out."
     )
@@ -152,7 +154,7 @@ def _round_window_corners(win):
 
 
 def _mark_as_tool_window(win):
-    """Keep CDCT's transient panels out of taskbar/Alt-Tab/window enumeration."""
+    """Keep AutoScript's transient panels out of taskbar/Alt-Tab/window enumeration."""
     try:
         win.attributes("-toolwindow", True)
         win.update_idletasks()
@@ -224,7 +226,7 @@ class Tooltip:
 class TranscriberApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("CDCT - Idle")
+        self.title("AutoScript - Idle")
         self.geometry("1040x670")
         self.minsize(780, 480)
         self.configure(fg_color=BG_MAIN)
@@ -281,7 +283,7 @@ class TranscriberApp(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         # Borderless settings/dropdown windows are independent native topmost
-        # windows. Dismiss them when CDCT is minimized so none remain floating
+        # windows. Dismiss them when AutoScript is minimized so none remain floating
         # above the desktop or prevent the main window from being restored.
         self.bind("<Unmap>", self._on_main_unmap, add="+")
 
@@ -317,7 +319,7 @@ class TranscriberApp(ctk.CTk):
             ).pack(anchor="w")
             ctk.CTkLabel(
                 logo,
-                text="Call Data & Conversation Transcripts",
+                text="Local Voice to Text",
                 font=app_font(11),
                 text_color=FG_FAINT,
             ).pack(anchor="w")
@@ -495,7 +497,7 @@ class TranscriberApp(ctk.CTk):
         return self.names.get(path.name) or _history_title(path)
 
     def _sorted_history_paths(self):
-        # Base CDCT sessions and optional plugins share this folder. Plugins
+        # Base AutoScript sessions and optional plugins share this folder. Plugins
         # may use their own meaningful filename convention, so every Markdown
         # transcript belongs in the same Recent Transcripts list.
         paths = TRANSCRIPTS_DIR.glob("*.md")
@@ -830,7 +832,7 @@ class TranscriberApp(ctk.CTk):
             "Capturing for",
             (
                 "Only this program's audio will be captured and transcribed, when "
-                "possible. If it can't be isolated, CDCT will ask before falling "
+                "possible. If it can't be isolated, AutoScript will ask before falling "
                 "back to capturing everything."
             ) if PROC_TAP_AVAILABLE else (
                 "Which open program you're calling in. This is just a check that it's "
@@ -853,8 +855,8 @@ class TranscriberApp(ctk.CTk):
 
         plugins_row = setting_row(
             "Plugins",
-            "Optional extensions installed beside CDCT. Enable only plugins you trust; "
-            "they run locally with the same permissions as CDCT.",
+            "Optional extensions installed beside AutoScript. Enable only plugins you trust; "
+            "they run locally with the same permissions as AutoScript.",
         )
         self.plugin_menu = ctk.CTkButton(
             plugins_row,
@@ -1065,7 +1067,7 @@ class TranscriberApp(ctk.CTk):
         if not self.plugin_menu or not self.plugin_menu.winfo_exists():
             return
 
-        # A plugin can be copied in while CDCT is open, so refresh manifests
+        # A plugin can be copied in while AutoScript is open, so refresh manifests
         # whenever this list is opened. Discovery never imports plugin code.
         self.plugin_manager.discover()
         self._refresh_plugin_menu()
@@ -1085,7 +1087,7 @@ class TranscriberApp(ctk.CTk):
         if not plugins:
             ctk.CTkLabel(
                 content,
-                text="No plugins found. Add plugin folders beside CDCT.exe.",
+                text="No plugins found. Add plugin folders beside AutoScript.exe.",
                 text_color=FG_FAINT,
                 font=app_font(12),
                 wraplength=300,
@@ -1343,7 +1345,7 @@ class TranscriberApp(ctk.CTk):
         detail = " — full system output" if self.active_capture_mode == "full" else f" — {self.target_display_name} only"
         self.status_var.set(f"Recording...{detail}")
         self.title_var.set("Recording...")
-        self.title("CDCT - Recording")
+        self.title("AutoScript - Recording")
         self.stop_btn.configure(state="normal")
         self.mode = "new"
         self.selected_history_path = None
@@ -1354,7 +1356,7 @@ class TranscriberApp(ctk.CTk):
             return
         self.stop_btn.configure(state="disabled")
         self.status_var.set("Stopping - finishing current chunk...")
-        self.title("CDCT - Stopping...")
+        self.title("AutoScript - Stopping...")
         threading.Thread(target=self._stop_backend, daemon=True).start()
 
     def _stop_backend(self):
@@ -1369,7 +1371,7 @@ class TranscriberApp(ctk.CTk):
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.status_var.set("Idle")
-        self.title("CDCT - Idle")
+        self.title("AutoScript - Idle")
         if self.transcript_path:
             self.title_var.set(self._display_title(self.transcript_path))
             self._load_live_transcript()
@@ -1438,17 +1440,27 @@ def _save_data_dir(path: Path):
         pass
 
 
+def _migrate_legacy_config():
+    """Adopt existing settings and encrypted plugin configuration after rebranding."""
+    if CONFIG_DIR.exists() or not LEGACY_CONFIG_DIR.exists():
+        return
+    try:
+        shutil.copytree(LEGACY_CONFIG_DIR, CONFIG_DIR)
+    except OSError:
+        pass
+
+
 def _run_first_time_setup(default_dir: Path) -> Path:
     """One-time picker for where recordings/transcripts get stored. Shown
     only when there's no saved choice and no existing data at the default
     location (see `main`)."""
     chosen = {"path": None}
     userprofile = Path(os.environ.get("USERPROFILE", str(Path.home())))
-    documents = userprofile / "Documents" / "CDCT"
-    desktop = userprofile / "Desktop" / "CDCT"
+    documents = userprofile / "Documents" / "AutoScript"
+    desktop = userprofile / "Desktop" / "AutoScript"
 
     dlg = ctk.CTk()
-    dlg.title("CDCT Setup")
+    dlg.title("AutoScript Setup")
     dlg.geometry("480x360")
     dlg.configure(fg_color=BG_MAIN)
     if ICON_PATH.exists():
@@ -1474,10 +1486,10 @@ def _run_first_time_setup(default_dir: Path) -> Path:
 
     def browse():
         folder = filedialog.askdirectory(
-            title="Choose a folder for CDCT data", parent=dlg
+            title="Choose a folder for AutoScript data", parent=dlg
         )
         if folder:
-            pick(Path(folder) / "CDCT")
+            pick(Path(folder) / "AutoScript")
 
     btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
     btn_frame.pack(padx=24, pady=20, fill="x")
@@ -1512,6 +1524,7 @@ def _run_first_time_setup(default_dir: Path) -> Path:
 def main():
     global ROOT, CHUNKS_DIR, TRANSCRIPTS_DIR, PINNED_FILE, NAMES_FILE
 
+    _migrate_legacy_config()
     default_root = ROOT
     saved = _load_data_dir()
     if saved is not None:

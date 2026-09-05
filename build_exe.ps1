@@ -1,4 +1,4 @@
-# Rebuilds dist\CDCT.exe from source.
+# Rebuilds dist\AutoScript.exe from source.
 # Run from the project root: .\build_exe.ps1
 Set-Location $PSScriptRoot
 
@@ -7,10 +7,10 @@ if ($LASTEXITCODE -ne 0) {
     .\venv\Scripts\python.exe -m pip install pyinstaller -q
 }
 
-.\venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name CDCT `
+.\venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name AutoScript `
   --icon icon.ico `
   --add-data "icon.ico;." `
-  --add-data "logo.png;." `
+  --add-data "autoscript_logo.png;." `
   --collect-all ctranslate2 `
   --collect-all av `
   --collect-all onnxruntime `
@@ -23,4 +23,4 @@ if ($LASTEXITCODE -ne 0) {
   --collect-data tokenizers `
   gui.py
 
-Write-Host "`nBuilt: dist\CDCT.exe"
+Write-Host "`nBuilt: dist\AutoScript.exe"
