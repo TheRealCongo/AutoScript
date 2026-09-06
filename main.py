@@ -1,24 +1,28 @@
 """AutoScript - CLI entry point.
 
 Captures either a selected process or the default Windows output device in
-rolling chunks, transcribes each chunk with faster-whisper, and appends
-timestamped lines to a markdown transcript as it goes.
+rolling chunks, transcribes each chunk with faster-whisper, and saves
+timestamped lines to an encrypted .asenc transcript as it goes.
 
 Usage:
-    venv\\Scripts\\python.exe main.py [--chunk-seconds 30] [--model small] [--target-process Zoom.exe]
+    venv\\Scripts\\python.exe main.py [--chunk-seconds 10] [--model small] [--target-process Zoom.exe]
 """
 import argparse
+import os
 import queue
+import re
+import secrets
 import signal
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import psutil
 
 from capture import make_recorder
 from transcriber import TranscriptionWorker, load_model
+from transcript_security import EncryptedLog, TokenVault, new_token
 
 ROOT = Path(__file__).parent
 CHUNKS_DIR = ROOT / "chunks"
@@ -39,9 +43,14 @@ def _resolve_pid(process_name: str) -> "int | None":
     return None
 
 
+def _safe_filename_stem(label: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", label).strip(" ._")
+    return cleaned[:80] or "SystemAudio"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--chunk-seconds", type=int, default=30)
+    parser.add_argument("--chunk-seconds", type=int, default=10)
     parser.add_argument(
         "--model", default="small", help="faster-whisper model size: tiny/base/small/medium"
     )
@@ -70,10 +79,19 @@ def main():
             )
 
     today = date.today().isoformat()
-    transcript_path = TRANSCRIPTS_DIR / f"transcript_{today}_{int(time.time())}.md"
-    transcript_path.write_text(f"## Transcript — {today}\n\n", encoding="utf-8")
+    target_label = Path(args.target_process).stem if args.target_process else "SystemAudio"
+    stamp = datetime.now().strftime("%d%b%y_%H%M%S").upper()
+    transcript_path = TRANSCRIPTS_DIR / f"{_safe_filename_stem(target_label)}_{stamp}.asenc"
+    sharing_token = new_token()
+    record_id = secrets.token_urlsafe(16)
+    token_vault = TokenVault(
+        Path(os.environ.get("APPDATA", str(Path.home()))) / "AutoScript" / "transcript-tokens.json"
+    )
+    token_vault.save(record_id, sharing_token)
+    encrypted_log = EncryptedLog(transcript_path, sharing_token, record_id, f"## Transcript — {today}\n\n")
 
     print(f"[INFO] Transcript file: {transcript_path}")
+    print(f"[INFO] Sharing token: {sharing_token}")
     print(f"[INFO] Loading faster-whisper model '{args.model}' ...")
     model, device = load_model(args.model)
     print(f"[INFO] Model loaded on {device}.")
@@ -89,7 +107,8 @@ def main():
         print(f"[INFO] Capturing loopback device: {recorder.device['name']}")
 
     worker = TranscriptionWorker(
-        model, chunk_q, transcript_path, delete_chunks=not args.keep_audio
+        model, chunk_q, transcript_path, delete_chunks=not args.keep_audio,
+        write_line=encrypted_log.append,
     )
 
     stop_requested = {"flag": False}

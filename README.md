@@ -1,77 +1,68 @@
-# AutoScript — Local Voice to Text
+# AutoScript
 
-> **Note:** AutoScript was previously named CDCT. This is a branding update; the project remains local-first, open source, and functionally continuous.
+AutoScript is a free, open-source Windows application for local voice-to-text.
+It records desktop audio or your own microphone, transcribes speech on your
+computer, and stores each transcript as an encrypted `.asenc` file.
 
-AutoScript is a local Windows app that captures audio and writes a live,
-timestamped markdown transcript. It works with calls, videos, and other
-desktop audio; it is not tied to Discord, Zoom, or any single service.
+Audio and transcript text stay on the recording computer. AutoScript downloads a
+selected transcription model only when that model is not already installed.
+The optional Discord plugin connects to Discord only while its bot is running.
 
-Audio and transcription stay on your PC. The only network activity is the
-one-time download of a Whisper model when you choose a model size that is not
-already installed.
+## Recording modes
 
-## Capture modes
+Use the **Device ↔ Notes** switch beside Settings to choose the source.
 
-AutoScript has two explicit capture modes:
+- **Device** captures a selected application when Windows can isolate it, or the
+  full system output when the operator explicitly approves that fallback.
+- **Notes** captures only the default microphone for private voice notes. Lines
+  from microphone capture are labeled **You**.
 
-- **A selected program** — choose an open program under the Settings gear's
-  **Capturing for** dropdown. AutoScript uses Windows WASAPI process loopback to
-  capture that process and its child processes only. This is the right choice
-  for a Discord call, browser video, or media player when other apps are also
-  making sound.
-- **Full system output** — leave the default target unchanged, or explicitly
-  choose to capture everything if AutoScript cannot isolate the selected program.
+Before every Device recording, AutoScript requires the operator to confirm that
+participants have been informed. The confirmation time is retained inside that
+recording's encrypted transcript. Notes mode does not show this confirmation.
 
-AutoScript never silently changes an attempted per-program capture into a
-full-system recording. If isolation cannot start, it explains why and offers
-**Cancel** or **Capture Everything Instead**.
+## Encrypted transcripts
 
-The target list contains normal user-facing apps only. AutoScript's own windows and
-Windows system shell/settings windows are excluded.
+Every new recording is encrypted with AES-256-GCM and saved as
+`TargetProgram_DDMMMYY_HHMMSS.asenc` or `VoiceNote_DDMMMYY_HHMMSS.asenc`.
 
-### Important scope
+Each transcript has its own high-entropy sharing token. AutoScript copies that
+token to the recording computer's clipboard when recording starts and stores it
+locally using Windows DPAPI. Use **Copy Token** from a transcript's gear menu if
+you need to share it again.
 
-Isolation is by **process**, not individual window or speaker. Two windows of
-the same browser can share a process tree and therefore cannot be separated
-from each other. AutoScript also does not identify who spoke; it transcribes the
-audio that the selected process produces.
+To share a transcript, send the `.asenc` file and its token separately to the
+recipient. A recipient opens the file in AutoScript and enters the token once;
+AutoScript keeps that successful unlock in the recipient's local Windows vault.
+Decryption happens in memory and does not create a plaintext copy.
 
-## How it works
+The Discord bot token is never used to encrypt or decrypt transcripts.
 
-1. **Capture** — `capture.py` records either the selected app's process tree
-   or the default output-device mix into rolling WAV chunks.
-2. **Transcribe** — `transcriber.py` sends finished chunks to
-   [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA is used
-   when available; otherwise AutoScript uses CPU automatically.
-3. **Output** — timestamped segments are appended live to a markdown file.
+## Using the app
 
-## Using AutoScript
+1. Download `AutoScript.exe` from the project Releases page.
+2. Choose a local folder for transcripts on first run.
+3. Select **Device** or **Notes** in the sidebar footer.
+4. Open Settings to choose the model, segment length, Device target, optional
+   microphone input, retained audio chunks, and installed plugins.
+5. Start recording. Transcript text appears as each audio segment is processed.
 
-- **Standalone app:** download `AutoScript.exe` from the
-  [Releases](../../releases) page. No Python installation is needed.
-- **First run:** choose where transcripts and optional audio chunks should be
-  stored. AutoScript remembers that location.
-- **Settings:** use the gear in the sidebar to choose the Whisper model,
-  chunk length, capture target, optional plugins, and whether to retain WAV
-  chunks after transcription.
+The sidebar lists recent calls and notes. You can search, rename, pin, delete,
+copy a transcript token, or unlock a shared encrypted transcript.
 
-The sidebar lists previous sessions. You can search an open transcript,
-rename or pin sessions, and delete sessions you no longer need.
+## Optional Discord plugin
+
+The AutoScript Discord Voice Transcriber joins a Discord server voice channel and
+records each Discord member as a separately labeled local transcript. It uses the
+same encrypted `.asenc` format and per-transcript sharing tokens as the base app.
 
 ## Responsible use
 
-Transcribing a call has the same consent and platform-rule considerations as
-recording it. Tell participants when transcription is active, follow the laws
-that apply to everyone on the call, and protect transcript files like any
-other sensitive recording. See [LEGAL_GUIDELINES.md](LEGAL_GUIDELINES.md) for
-the project guidance.
+Tell participants before recording or transcribing them, follow applicable law
+and platform rules, and protect transcript files as you would any sensitive
+recording. See [LEGAL_GUIDELINES.md](LEGAL_GUIDELINES.md).
 
-## Requirements
-
-- Windows 10 version 2004 or newer, or Windows 11
-- Python 3.10+ when running from source
-
-## Running from source
+## Run from source
 
 ```powershell
 py -m venv venv
@@ -79,38 +70,24 @@ py -m venv venv
 .\venv\Scripts\python.exe gui.py
 ```
 
-For the command-line interface:
-
-```powershell
-.\venv\Scripts\python.exe main.py --target-process Discord.exe
-```
-
-`--target-process` isolates the first matching running process. If isolation
-cannot be initialized, the CLI prints a warning before using full system
-output.
-
-## Building the exe
+## Build the Windows executable
 
 ```powershell
 .\build_exe.ps1
 ```
 
-This produces `dist\AutoScript.exe` with the required native capture and
-transcription dependencies bundled. GPU acceleration additionally requires
-the relevant NVIDIA CUDA libraries in the build environment; CPU fallback is
-automatic.
+The build produces `dist\AutoScript.exe` with the required capture,
+transcription, encryption, and interface dependencies bundled.
 
 ## Project files
 
-- `capture.py` — full-system and per-process capture, plus target enumeration
-- `transcriber.py` — Whisper worker and transcript writing
-- `gui.py` — desktop UI, settings, session history, and first-run setup
-- `main.py` - command-line entry point
-- `build_exe.ps1` - PyInstaller build script
-- `plugin_api.py` / `plugin_manager.py` - optional external-plugin contract
-  and loader
-- `plugins/` - install location for optional extensions; see
-  [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md)
+- `gui.py` — desktop interface, recording workflow, encrypted history, and
+  first-run setup
+- `capture.py` — Device and microphone capture
+- `transcriber.py` — local speech transcription worker
+- `transcript_security.py` — encrypted transcript format and Windows token vault
+- `plugin_api.py` / `plugin_manager.py` — optional plugin contract and loader
+- `plugins/` — install location for optional extensions
 
 ## License
 

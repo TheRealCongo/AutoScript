@@ -38,12 +38,14 @@ class PluginManager:
         app_version: str,
         transcripts_dir: Path | None = None,
         log: Callable[[str], None] | None = None,
+        copy_token: Callable[[str], None] | None = None,
     ):
         self.plugins_dir = plugins_dir
         self.state_file = state_file
         self.app_version = app_version
         self.transcripts_dir = transcripts_dir or (state_file.parent / "transcripts")
         self.log = log or (lambda _message: None)
+        self.copy_token = copy_token
         self.plugins: dict[str, PluginRecord] = {}
         self._enabled_ids = self._load_state()
 
@@ -186,7 +188,7 @@ class PluginManager:
             instance = getattr(module, class_name)()
             plugin_dir = self.state_file.parent / "plugins" / record.plugin_id
             context = PluginContext(
-                self.app_version, plugin_dir, self.transcripts_dir, self.log
+                self.app_version, plugin_dir, self.transcripts_dir, self.log, self.copy_token
             )
             activate = getattr(instance, "activate", None)
             if callable(activate):

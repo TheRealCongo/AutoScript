@@ -151,6 +151,18 @@ def get_default_loopback_device(pa: "pyaudio.PyAudio") -> dict:
     return default_speakers
 
 
+def get_default_microphone_device(pa: "pyaudio.PyAudio") -> dict:
+    """Return Windows' current default input device for optional mic capture."""
+    wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+    device_index = wasapi_info.get("defaultInputDevice")
+    if device_index is None or device_index < 0:
+        raise RuntimeError("No default microphone is available")
+    microphone = pa.get_device_info_by_index(device_index)
+    if microphone.get("maxInputChannels", 0) < 1:
+        raise RuntimeError("The default microphone has no input channels")
+    return microphone
+
+
 MAX_CONSECUTIVE_STREAM_ERRORS = 5
 
 
@@ -171,15 +183,20 @@ class LoopbackRecorder:
         out_dir: Path,
         chunk_queue: "queue.Queue",
         on_error=None,
+        device_getter=get_default_loopback_device,
+        chunk_prefix: str = "chunk",
+        speaker_label: str | None = None,
     ):
         self.chunk_seconds = chunk_seconds
         self.out_dir = out_dir
         self.chunk_queue = chunk_queue
         self.on_error = on_error
+        self.chunk_prefix = chunk_prefix
+        self.speaker_label = speaker_label
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pa = pyaudio.PyAudio()
-        self.device = get_default_loopback_device(self._pa)
+        self.device = device_getter(self._pa)
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -259,14 +276,17 @@ class LoopbackRecorder:
                 if not frames:
                     continue
 
-                chunk_path = self.out_dir / f"chunk_{int(chunk_start_wall)}.wav"
+                chunk_path = self.out_dir / f"{self.chunk_prefix}_{time.time_ns()}.wav"
                 with wave.open(str(chunk_path), "wb") as wf:
                     wf.setnchannels(channels)
                     wf.setsampwidth(self._pa.get_sample_size(pyaudio.paInt16))
                     wf.setframerate(rate)
                     wf.writeframes(b"".join(frames))
 
-                self.chunk_queue.put((chunk_path, chunk_start_wall))
+                item = (chunk_path, chunk_start_wall)
+                if self.speaker_label:
+                    item += (self.speaker_label,)
+                self.chunk_queue.put(item)
         finally:
             try:
                 stream.stop_stream()
@@ -277,6 +297,42 @@ class LoopbackRecorder:
                 self._pa.terminate()
             except Exception:
                 pass
+
+
+class MicrophoneRecorder(LoopbackRecorder):
+    """Captures the default microphone in parallel with call/system audio."""
+
+    def __init__(self, chunk_seconds: int, out_dir: Path, chunk_queue: "queue.Queue", on_error=None):
+        super().__init__(
+            chunk_seconds, out_dir, chunk_queue, on_error=on_error,
+            device_getter=get_default_microphone_device, chunk_prefix="microphone",
+            speaker_label="You",
+        )
+
+
+class CombinedRecorder:
+    """Starts and stops several compatible audio sources as one recording."""
+
+    def __init__(self, *recorders):
+        self.recorders = recorders
+
+    def start(self):
+        started = []
+        try:
+            for recorder in self.recorders:
+                recorder.start()
+                started.append(recorder)
+        except Exception:
+            for recorder in reversed(started):
+                try:
+                    recorder.stop()
+                except Exception:
+                    pass
+            raise
+
+    def stop(self):
+        for recorder in reversed(self.recorders):
+            recorder.stop()
 
 
 # How often the accumulator checks whether the target process has exited.
@@ -404,28 +460,45 @@ def make_recorder(
     target_pid: "int | None" = None,
     on_error=None,
     probe_timeout: float = 2.5,
+    include_microphone: bool = False,
+    microphone_only: bool = False,
 ):
     """Single construction path for both recorder types.
 
-    Returns (recorder, mode, reason): mode is "process" or "full"; reason is
+    Returns (recorder, mode, reason): mode is "process", "full", or
+    "microphone"; reason is
     None on success, else a short human-readable string explaining why
     per-process isolation wasn't used, for the caller to show the user
     before silently falling back to full-device capture.
     """
+    def with_microphone(recorder, mode: str, reason: str | None):
+        if not include_microphone:
+            return recorder, mode, reason
+        microphone = MicrophoneRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error)
+        return CombinedRecorder(recorder, microphone), mode, reason
+
+    # Voice-note mode intentionally never opens a loopback or process-audio
+    # source. It uses the same default microphone and chunk metadata as the
+    # optional call microphone, so the transcriber continues to label lines
+    # as "You" without needing a separate transcription path.
+    if microphone_only:
+        return MicrophoneRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "microphone", None
+
     if target_pid is None:
-        return LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", None
+        return with_microphone(
+            LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", None
+        )
 
     if not PROC_TAP_AVAILABLE:
-        return (
+        return with_microphone(
             LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error),
-            "full",
-            "per-process capture unavailable on this build",
+            "full", "per-process capture unavailable on this build",
         )
 
     candidate = ProcessLoopbackRecorder(chunk_seconds, out_dir, chunk_queue, target_pid, on_error=on_error)
     try:
         if candidate.probe(probe_timeout):
-            return candidate, "process", None
+            return with_microphone(candidate, "process", None)
         reason = "no audio activity detected from that program"
     except Exception as exc:
         reason = str(exc)
@@ -434,4 +507,6 @@ def make_recorder(
         candidate.stop()
     except Exception:
         pass
-    return LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", reason
+    return with_microphone(
+        LoopbackRecorder(chunk_seconds, out_dir, chunk_queue, on_error=on_error), "full", reason
+    )

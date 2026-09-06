@@ -35,6 +35,7 @@ class TranscriptionWorker:
         delete_chunks: bool = True,
         on_line: Optional[Callable[[str], None]] = None,
         speaker_label: str | None = None,
+        write_line: Optional[Callable[[str], None]] = None,
     ):
         self.model = model
         self.chunk_queue = chunk_queue
@@ -42,6 +43,7 @@ class TranscriptionWorker:
         self.delete_chunks = delete_chunks
         self.on_line = on_line
         self.speaker_label = speaker_label
+        self.write_line = write_line
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -101,7 +103,10 @@ class TranscriptionWorker:
                 time.sleep(0.3)
 
     def _append_line(self, line: str):
-        with open(self.transcript_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        if self.write_line is not None:
+            self.write_line(line)
+        else:
+            with open(self.transcript_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
         if self.on_line:
             self.on_line(line)

@@ -11,3 +11,4 @@ __pycache__/
 # never through the source repository.
 CDCT.exe
 AutoScript.exe
+RELEASE_NOTES.md
