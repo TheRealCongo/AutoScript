@@ -74,7 +74,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.6"
+APP_VERSION = "4.0.7"
 RELEASES_API_URL = "https://api.github.com/repos/TheRealCongo/AutoScript/releases/latest"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
@@ -2112,6 +2112,8 @@ def _schedule_update_relaunch(staged: Path) -> None:
         "timeout /t 1 /nobreak >nul\r\n"
         "goto replace\r\n"
         ":relaunch\r\n"
+        "rem A one-file PyInstaller relaunch must not inherit this app's worker environment.\r\n"
+        "set \"PYINSTALLER_RESET_ENVIRONMENT=1\"\r\n"
         "start \"\" \"%TARGET%\"\r\n"
         ":cleanup\r\n"
         "del \"%~f0\"\r\n",

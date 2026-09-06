@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.0.7 — 2026-09-06
+
+### Fixed
+
+- Corrected the Windows self-update relaunch so the updated one-file executable
+  starts as an independent AutoScript process instead of inheriting PyInstaller's
+  worker-process environment.
+
+
 ## 4.0.6 — 2026-09-06
 
 ### Fixed
