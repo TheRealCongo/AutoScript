@@ -42,7 +42,8 @@ _LocalFree.argtypes = (ctypes.c_void_p,)
 _LocalFree.restype = ctypes.c_void_p
 
 
-def _protect(value: str) -> str:
+def protect_secret(value: str) -> str:
+    """Protect a small local secret for the current Windows user with DPAPI."""
     raw = value.encode("utf-8")
     source_buffer = ctypes.create_string_buffer(raw)
     source = _Blob(len(raw), ctypes.cast(source_buffer, ctypes.POINTER(ctypes.c_byte)))
@@ -55,7 +56,8 @@ def _protect(value: str) -> str:
         _LocalFree(target.pbData)
 
 
-def _unprotect(value: str) -> str:
+def unprotect_secret(value: str) -> str:
+    """Read a value previously protected by :func:`protect_secret`."""
     raw = base64.b64decode(value.encode("ascii"))
     source_buffer = ctypes.create_string_buffer(raw)
     source = _Blob(len(raw), ctypes.cast(source_buffer, ctypes.POINTER(ctypes.c_byte)))
@@ -123,13 +125,13 @@ class TokenVault:
             values = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             values = {}
-        values[transcript_id] = _protect(token)
+        values[transcript_id] = protect_secret(token)
         _atomic(self.path, json.dumps(values).encode("utf-8"))
 
     def get(self, transcript_id: str) -> str | None:
         try:
             value = json.loads(self.path.read_text(encoding="utf-8")).get(transcript_id)
-            return _unprotect(value) if value else None
+            return unprotect_secret(value) if value else None
         except (OSError, ValueError):
             return None
 
