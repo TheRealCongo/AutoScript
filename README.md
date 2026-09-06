@@ -10,7 +10,7 @@ The optional Discord plugin connects to Discord only while its bot is running.
 
 ## Recording modes
 
-Use the **Device ↔ Notes** switch beside Settings to choose the source.
+Use the **Device ↔ Notes** switch above Settings to choose the source.
 
 - **Device** captures a selected application when Windows can isolate it, or the
   full system output when the operator explicitly approves that fallback.
@@ -19,7 +19,7 @@ Use the **Device ↔ Notes** switch beside Settings to choose the source.
 
 Before every Device recording, AutoScript requires the operator to confirm that
 participants have been informed. The confirmation time is retained inside that
-recording's encrypted transcript. Notes mode does not show this confirmation.
+recording's transcript. Notes mode does not show this confirmation.
 
 ## Transcript privacy
 
