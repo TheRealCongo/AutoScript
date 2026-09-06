@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.2 — 2026-09-06
+
+### Changed
+
+- Added a subtle release-version label beside Open Folder so users can identify the installed executable.
+
 ## 4.0.1 — 2026-09-06
 
 ### Fixed

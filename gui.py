@@ -70,7 +70,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.1"
+APP_VERSION = "4.0.2"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
@@ -608,6 +608,12 @@ class TranscriberApp(ctk.CTk):
             corner_radius=9,
             font=app_font(12),
         ).pack(side="right")
+        ctk.CTkLabel(
+            bottom,
+            text=f"Release v{APP_VERSION}",
+            text_color=FG_FAINT,
+            font=app_font(10),
+        ).pack(side="right", padx=(0, 12))
 
     # ---------- history sidebar ----------
 
