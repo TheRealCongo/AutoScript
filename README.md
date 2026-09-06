@@ -47,7 +47,7 @@ When the packaged `AutoScript.exe` opens, it briefly checks the project's
 GitHub Releases page. If a newer stable release is available, AutoScript
 downloads it, verifies GitHub's published SHA-256 checksum, replaces the old
 EXE, and starts the updated version automatically. The first welcome screen
-after an update includes that release's short changelog. If GitHub is
+after an update or manual download includes that release's short changelog. If GitHub is
 unavailable, AutoScript opens normally without sending transcript data.
 
 ## Using the app

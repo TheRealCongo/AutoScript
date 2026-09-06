@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.6 — 2026-09-06
+
+### Fixed
+
+- Show the current release's notes once after a manual download as well as
+  after an automatic update.
+
 ## 4.0.5 — 2026-09-06
 
 ### Added

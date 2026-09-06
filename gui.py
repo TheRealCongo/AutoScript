@@ -74,7 +74,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.5"
+APP_VERSION = "4.0.6"
 RELEASES_API_URL = "https://api.github.com/repos/TheRealCongo/AutoScript/releases/latest"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
@@ -2022,7 +2022,7 @@ def _save_encryption_enabled(enabled: bool) -> None:
     _write_app_config(config)
 
 
-def _find_release_update() -> dict | None:
+def _fetch_latest_release() -> dict | None:
     """Read the newest stable GitHub release and return its trusted EXE asset."""
     try:
         request = urllib.request.Request(
@@ -2033,7 +2033,7 @@ def _find_release_update() -> dict | None:
             release = json.loads(response.read().decode("utf-8"))
         latest = str(release.get("tag_name", ""))
         current_key, latest_key = _version_key(APP_VERSION), _version_key(latest)
-        if release.get("draft") or release.get("prerelease") or not current_key or not latest_key or latest_key <= current_key:
+        if release.get("draft") or release.get("prerelease") or not current_key or not latest_key or latest_key < current_key:
             return None
         asset = next((item for item in release.get("assets", []) if item.get("name") == "AutoScript.exe"), None)
         if not asset:
@@ -2051,6 +2051,24 @@ def _find_release_update() -> dict | None:
         }
     except (OSError, ValueError, urllib.error.URLError):
         return None
+
+
+def _find_release_update() -> dict | None:
+    """Return a newer release, while allowing the current release to show notes."""
+    release = _fetch_latest_release()
+    if not release or _version_key(release["version"]) <= _version_key(APP_VERSION):
+        return None
+    return release
+
+
+def _queue_release_notice(info: dict) -> None:
+    """Show each release's notes once, including a manually downloaded EXE."""
+    config = _load_app_config()
+    if config.get("seen_release_notes_version") == info["version"]:
+        return
+    config["last_update_notice"] = {"version": info["version"], "notes": info["notes"]}
+    config["seen_release_notes_version"] = info["version"]
+    _write_app_config(config)
 
 
 def _download_release_update(info: dict) -> Path:
@@ -2128,15 +2146,17 @@ def _run_startup_update_check() -> None:
     ctk.CTkLabel(splash, textvariable=status, font=app_font(12), text_color=FG_MUTED).pack()
     splash.update()
     try:
-        update = _find_release_update()
-        if not update:
+        release = _fetch_latest_release()
+        if not release:
             return
+        if _version_key(release["version"]) <= _version_key(APP_VERSION):
+            _queue_release_notice(release)
+            return
+        update = release
         status.set(f"Downloading AutoScript v{update['version']}...")
         splash.update()
         _download_release_update(update)
-        config = _load_app_config()
-        config["last_update_notice"] = {"version": update["version"], "notes": update["notes"]}
-        _write_app_config(config)
+        _queue_release_notice(update)
         status.set("Update verified. Starting the new version...")
         splash.update()
         _schedule_update_relaunch(UPDATES_DIR / f"AutoScript-{update['version']}.exe")
