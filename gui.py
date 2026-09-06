@@ -15,17 +15,21 @@ Wraps capture.py / transcriber.py. Run directly with python, or build to an
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import queue
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import urllib.error
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,7 +74,8 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.4"
+APP_VERSION = "4.0.5"
+RELEASES_API_URL = "https://api.github.com/repos/TheRealCongo/AutoScript/releases/latest"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
@@ -78,12 +83,26 @@ APP_VERSION = "4.0.4"
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "AutoScript"
 LEGACY_CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "CDCT"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+UPDATES_DIR = CONFIG_DIR / "updates"
 
 FONT_FAMILY = "Segoe UI Variable"
 
 
 def app_font(size: int, weight: str = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(family=FONT_FAMILY, size=size, weight=weight)
+
+
+def _version_key(version: str) -> tuple[int, ...] | None:
+    """Return a comparable stable-release version, accepting an optional v."""
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", version.strip())
+    return tuple(int(part) for part in match.group(1).split(".")) if match else None
+
+
+def _release_summary(body: str) -> str:
+    """Keep release notes useful in the welcome view without overwhelming it."""
+    lines = [line.rstrip() for line in body.strip().splitlines()]
+    summary = "\n".join(lines[:18]).strip()
+    return summary[:1100] + ("\n…" if len(summary) > 1100 else "")
 
 
 # --- modern neutral palette: layered dark surfaces and one calm accent ---
@@ -349,6 +368,7 @@ class TranscriberApp(ctk.CTk):
         self.active_capture_mode: str = "full"
         self.active_self_transcription = False
         self.settings_popup = None
+        self.update_notice = _consume_update_notice()
 
         self._build_sidebar()
         self._build_main()
@@ -916,9 +936,16 @@ class TranscriberApp(ctk.CTk):
             if self.transcript_path:
                 self._load_live_transcript()
             else:
-                self._set_textbox_content(WELCOME_TEXT)
+                self._set_textbox_content(self._welcome_text())
         self.file_var.set(str(self.transcript_path) if self.transcript_path else "")
         self._update_history_highlight()
+
+    def _welcome_text(self) -> str:
+        if not self.update_notice:
+            return WELCOME_TEXT
+        version = self.update_notice.get("version", "the latest release")
+        notes = self.update_notice.get("notes") or "Release notes are available on GitHub."
+        return f"{WELCOME_TEXT}\n\n--- Updated to v{version} ---\n{notes}"
 
     def show_history_item(self, path: Path):
         self.mode = "history"
@@ -1995,6 +2022,136 @@ def _save_encryption_enabled(enabled: bool) -> None:
     _write_app_config(config)
 
 
+def _find_release_update() -> dict | None:
+    """Read the newest stable GitHub release and return its trusted EXE asset."""
+    try:
+        request = urllib.request.Request(
+            RELEASES_API_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": f"AutoScript/{APP_VERSION}"},
+        )
+        with urllib.request.urlopen(request, timeout=4) as response:
+            release = json.loads(response.read().decode("utf-8"))
+        latest = str(release.get("tag_name", ""))
+        current_key, latest_key = _version_key(APP_VERSION), _version_key(latest)
+        if release.get("draft") or release.get("prerelease") or not current_key or not latest_key or latest_key <= current_key:
+            return None
+        asset = next((item for item in release.get("assets", []) if item.get("name") == "AutoScript.exe"), None)
+        if not asset:
+            return None
+        url, digest = str(asset.get("browser_download_url", "")), str(asset.get("digest", ""))
+        if not url.startswith("https://github.com/TheRealCongo/AutoScript/releases/download/"):
+            return None
+        if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            return None
+        return {
+            "version": latest.lstrip("v"),
+            "url": url,
+            "sha256": digest.split(":", 1)[1].lower(),
+            "notes": _release_summary(str(release.get("body", ""))),
+        }
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def _download_release_update(info: dict) -> Path:
+    """Download the release asset and require GitHub's published SHA-256."""
+    UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    staged = UPDATES_DIR / f"AutoScript-{info['version']}.exe"
+    partial = staged.with_suffix(".part")
+    try:
+        request = urllib.request.Request(info["url"], headers={"User-Agent": f"AutoScript/{APP_VERSION}"})
+        with urllib.request.urlopen(request, timeout=30) as response, partial.open("wb") as file:
+            while chunk := response.read(1024 * 1024):
+                file.write(chunk)
+        actual = hashlib.sha256(partial.read_bytes()).hexdigest()
+        if actual.lower() != info["sha256"]:
+            raise ValueError("Downloaded file did not match the release checksum")
+        os.replace(partial, staged)
+        return staged
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def _schedule_update_relaunch(staged: Path) -> None:
+    """Replace the running EXE only after this process has exited, then relaunch."""
+    target = Path(sys.executable)
+    script = UPDATES_DIR / "install-update.cmd"
+    script.write_text(
+        "@echo off\r\n"
+        f"set \"SOURCE={staged}\"\r\n"
+        f"set \"TARGET={target}\"\r\n"
+        f"set \"PID={os.getpid()}\"\r\n"
+        "set /a RETRIES=0\r\n"
+        ":wait\r\n"
+        "tasklist /FI \"PID eq %PID%\" /NH | findstr /C:\"%PID%\" >nul\r\n"
+        "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\n"
+        ":replace\r\n"
+        "move /Y \"%SOURCE%\" \"%TARGET%\" >nul\r\n"
+        "if not errorlevel 1 goto relaunch\r\n"
+        "set /a RETRIES+=1\r\n"
+        "if %RETRIES% GEQ 30 goto cleanup\r\n"
+        "timeout /t 1 /nobreak >nul\r\n"
+        "goto replace\r\n"
+        ":relaunch\r\n"
+        "start \"\" \"%TARGET%\"\r\n"
+        ":cleanup\r\n"
+        "del \"%~f0\"\r\n",
+        encoding="utf-8",
+    )
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(script)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        close_fds=True,
+    )
+
+
+def _consume_update_notice() -> dict | None:
+    config = _load_app_config()
+    notice = config.pop("last_update_notice", None)
+    if notice is not None:
+        _write_app_config(config)
+    return notice if isinstance(notice, dict) else None
+
+
+def _run_startup_update_check() -> None:
+    """Show brief status before the main UI, then update/relaunch when needed."""
+    if not getattr(sys, "frozen", False):
+        return
+    splash = ctk.CTk()
+    splash.title("AutoScript")
+    splash.geometry("390x130")
+    splash.resizable(False, False)
+    splash.configure(fg_color=BG_MAIN)
+    status = ctk.StringVar(value="Checking for updates...")
+    ctk.CTkLabel(splash, text="AutoScript", font=app_font(18, "bold"), text_color=FG_TEXT).pack(pady=(25, 5))
+    ctk.CTkLabel(splash, textvariable=status, font=app_font(12), text_color=FG_MUTED).pack()
+    splash.update()
+    try:
+        update = _find_release_update()
+        if not update:
+            return
+        status.set(f"Downloading AutoScript v{update['version']}...")
+        splash.update()
+        _download_release_update(update)
+        config = _load_app_config()
+        config["last_update_notice"] = {"version": update["version"], "notes": update["notes"]}
+        _write_app_config(config)
+        status.set("Update verified. Starting the new version...")
+        splash.update()
+        _schedule_update_relaunch(UPDATES_DIR / f"AutoScript-{update['version']}.exe")
+        splash.destroy()
+        raise SystemExit(0)
+    except (OSError, ValueError, urllib.error.URLError):
+        # A failed update check/download must never prevent the installed app opening.
+        return
+    finally:
+        try:
+            splash.destroy()
+        except tk.TclError:
+            pass
+
+
 def _migrate_legacy_config():
     """Adopt existing settings and encrypted plugin configuration after rebranding."""
     if CONFIG_DIR.exists() or not LEGACY_CONFIG_DIR.exists():
@@ -2079,6 +2236,7 @@ def _run_first_time_setup(default_dir: Path) -> Path:
 def main():
     global ROOT, CHUNKS_DIR, TRANSCRIPTS_DIR, PINNED_FILE, NAMES_FILE
 
+    _run_startup_update_check()
     _migrate_legacy_config()
     default_root = ROOT
     saved = _load_data_dir()

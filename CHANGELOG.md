@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.0.5 — 2026-09-06
+
+### Added
+
+- Added a startup update check for packaged releases. New releases download,
+  verify against GitHub's published SHA-256 digest, install, and relaunch
+  automatically before the main window opens.
+- Shows the applied release's short changelog in the next welcome screen.
+
 ## 4.0.4 — 2026-09-06
 
 ### Changed
