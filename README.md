@@ -54,7 +54,7 @@ unavailable, AutoScript opens normally without sending transcript data.
 
 1. Download `AutoScript.exe` from the project Releases page.
 2. Choose a local folder for transcripts on first run.
-3. Select **Device** or **Notes** in the sidebar footer.
+3. Select **Device** or **Notes** above Settings in the sidebar.
 4. Open Settings to choose the model, segment length, Device target, optional
    microphone input, retained audio chunks, and installed plugins.
 5. Start recording. Transcript text appears as each audio segment is processed.
@@ -93,7 +93,7 @@ transcription, encryption, and interface dependencies bundled.
 
 ## Project files
 
-- `gui.py` — desktop interface, recording workflow, encrypted history, and
+- `gui.py` — desktop interface, recording workflow, transcript history, and
   first-run setup
 - `capture.py` — Device and microphone capture
 - `transcriber.py` — local speech transcription worker
