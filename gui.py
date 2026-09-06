@@ -70,7 +70,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.3"
+APP_VERSION = "4.0.4"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
@@ -433,7 +433,7 @@ class TranscriberApp(ctk.CTk):
             anchor="w",
         ).pack(fill="x", padx=20, pady=(0, 6))
 
-        footer = ctk.CTkFrame(sidebar, fg_color="transparent", height=64)
+        footer = ctk.CTkFrame(sidebar, fg_color="transparent", height=58)
         footer.pack(side="bottom", fill="x")
         footer.pack_propagate(False)
         self.gear_btn = ctk.CTkButton(
@@ -448,11 +448,23 @@ class TranscriberApp(ctk.CTk):
             font=app_font(16),
             command=self._open_settings_panel,
         )
-        self.gear_btn.pack(side="left", padx=(14, 8), pady=12)
+        self.gear_btn.pack(side="left", padx=(14, 8), pady=10)
         Tooltip(self.gear_btn, "Settings: model, chunk length, capture target, microphone, and kept audio.")
 
-        mode_toggle = ctk.CTkFrame(footer, fg_color="transparent")
-        mode_toggle.pack(side="right", padx=14, pady=12)
+        release_label = ctk.CTkLabel(
+            footer,
+            text=f"Release v{APP_VERSION}",
+            text_color=FG_FAINT,
+            font=app_font(10),
+        )
+        release_label.pack(side="left", pady=10)
+        Tooltip(release_label, f"Installed AutoScript release: v{APP_VERSION}")
+
+        quick_controls = ctk.CTkFrame(sidebar, fg_color="transparent")
+        quick_controls.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
+
+        mode_toggle = ctk.CTkFrame(quick_controls, fg_color="transparent")
+        mode_toggle.pack(anchor="w", pady=(0, 5))
         ctk.CTkLabel(
             mode_toggle, text="Device", text_color=FG_MUTED, font=app_font(10)
         ).pack(side="left", padx=(0, 5))
@@ -477,8 +489,8 @@ class TranscriberApp(ctk.CTk):
         ).pack(side="left", padx=(5, 0))
         Tooltip(self.recording_mode_toggle, "Off: device capture. On: note taking from your microphone only.")
 
-        encryption_toggle = ctk.CTkFrame(footer, fg_color="transparent")
-        encryption_toggle.pack(side="right", padx=(0, 14), pady=12)
+        encryption_toggle = ctk.CTkFrame(quick_controls, fg_color="transparent")
+        encryption_toggle.pack(anchor="w")
         ctk.CTkLabel(
             encryption_toggle, text="Plain", text_color=FG_MUTED, font=app_font(10)
         ).pack(side="left", padx=(0, 5))
@@ -634,12 +646,6 @@ class TranscriberApp(ctk.CTk):
             corner_radius=9,
             font=app_font(12),
         ).pack(side="right")
-        ctk.CTkLabel(
-            bottom,
-            text=f"Release v{APP_VERSION}",
-            text_color=FG_FAINT,
-            font=app_font(10),
-        ).pack(side="right", padx=(0, 12))
 
     # ---------- history sidebar ----------
 

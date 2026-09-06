@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.4 — 2026-09-06
+
+### Changed
+
+- Moved quick capture and encryption controls above Settings and placed the
+  release label beside the Settings button.
+
 ## 4.0.3 — 2026-09-06
 
 ### Added
