@@ -70,7 +70,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.2"
+APP_VERSION = "4.0.3"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS
 # location regardless of where the user picks to store everything else -
@@ -322,8 +322,10 @@ class TranscriberApp(ctk.CTk):
         self.chunk_var = ctk.StringVar(value="10")
         self.keep_audio_var = ctk.BooleanVar(value=False)
         self.include_microphone_var = ctk.BooleanVar(value=False)
+        self.encrypt_new_transcripts_var = ctk.BooleanVar(value=_load_encryption_enabled())
         self.recording_mode_var = ctk.StringVar(value="Call / system audio")
         self.recording_mode_toggle: ctk.CTkSwitch | None = None
+        self.encryption_toggle: ctk.CTkSwitch | None = None
         self.target_process_name: str | None = "Discord.exe"
         self.target_display_name = "Discord"
         self.target_pid: int | None = None
@@ -474,6 +476,30 @@ class TranscriberApp(ctk.CTk):
             mode_toggle, text="Notes", text_color=FG_MUTED, font=app_font(10)
         ).pack(side="left", padx=(5, 0))
         Tooltip(self.recording_mode_toggle, "Off: device capture. On: note taking from your microphone only.")
+
+        encryption_toggle = ctk.CTkFrame(footer, fg_color="transparent")
+        encryption_toggle.pack(side="right", padx=(0, 14), pady=12)
+        ctk.CTkLabel(
+            encryption_toggle, text="Plain", text_color=FG_MUTED, font=app_font(10)
+        ).pack(side="left", padx=(0, 5))
+        self.encryption_toggle = ctk.CTkSwitch(
+            encryption_toggle,
+            text="",
+            variable=self.encrypt_new_transcripts_var,
+            command=self._save_encryption_preference,
+            width=38,
+            switch_width=34,
+            switch_height=18,
+            fg_color=BG_SIDEBAR_HOVER,
+            progress_color=ACCENT,
+            button_color=FG_TEXT,
+            button_hover_color=FG_MUTED,
+        )
+        self.encryption_toggle.pack(side="left")
+        ctk.CTkLabel(
+            encryption_toggle, text="Encrypted", text_color=FG_MUTED, font=app_font(10)
+        ).pack(side="left", padx=(5, 0))
+        Tooltip(self.encryption_toggle, "On: saves an encrypted .asenc transcript with a sharing token. Off: saves a normal .md transcript.")
 
         self.history_scroll = ctk.CTkScrollableFrame(
             sidebar, fg_color="transparent", scrollbar_button_color=BG_SIDEBAR_HOVER
@@ -1448,6 +1474,9 @@ class TranscriberApp(ctk.CTk):
         if hasattr(self, "start_btn") and not self.running and not self.starting:
             self.start_btn.configure(text="●  Start Voice Note" if self_transcription else "●  Start Recording")
 
+    def _save_encryption_preference(self) -> None:
+        _save_encryption_enabled(bool(self.encrypt_new_transcripts_var.get()))
+
     def start(self):
         if self.running or self.starting:
             return
@@ -1471,6 +1500,7 @@ class TranscriberApp(ctk.CTk):
         model_size = self.model_var.get().lower()
         keep_audio = bool(self.keep_audio_var.get())
         include_microphone = bool(self.include_microphone_var.get())
+        encrypt_new_transcripts = bool(self.encrypt_new_transcripts_var.get())
         self_transcription = self.recording_mode_var.get() == "Self transcription"
         target_pid = None if self_transcription else self.target_pid
         target_process_name = None if self_transcription else self.target_process_name
@@ -1480,11 +1510,13 @@ class TranscriberApp(ctk.CTk):
         self.start_btn.configure(state="disabled")
         if self.recording_mode_toggle:
             self.recording_mode_toggle.configure(state="disabled")
+        if self.encryption_toggle:
+            self.encryption_toggle.configure(state="disabled")
         self.stop_btn.configure(state="normal", text="Cancel")
         self._set_busy("Preparing recording...")
         threading.Thread(
             target=self._start_backend,
-            args=(chunk_seconds, model_size, keep_audio, include_microphone, self_transcription, target_pid, target_process_name, target_label, disclosure_confirmed_at),
+            args=(chunk_seconds, model_size, keep_audio, include_microphone, encrypt_new_transcripts, self_transcription, target_pid, target_process_name, target_label, disclosure_confirmed_at),
             daemon=True,
         ).start()
 
@@ -1503,7 +1535,8 @@ class TranscriberApp(ctk.CTk):
         return True
 
     def _start_backend(self, chunk_seconds: int, model_size: str, keep_audio: bool,
-                       include_microphone: bool, self_transcription: bool,
+                       include_microphone: bool, encrypt_new_transcripts: bool,
+                       self_transcription: bool,
                        target_pid: int | None, target_process_name: str | None,
                        target_label: str, disclosure_confirmed_at: str | None) -> None:
         # This method deliberately performs no Tkinter calls.  It runs on a
@@ -1578,23 +1611,28 @@ class TranscriberApp(ctk.CTk):
 
         today = date.today().isoformat()
         stamp = datetime.now().strftime("%d%b%y_%H%M%S").upper()
-        path = TRANSCRIPTS_DIR / f"{_safe_filename_stem(target_label)}_{stamp}.asenc"
+        extension = ".asenc" if encrypt_new_transcripts else ".md"
+        path = TRANSCRIPTS_DIR / f"{_safe_filename_stem(target_label)}_{stamp}{extension}"
         header_title = "Voice Note" if self_transcription else "Transcript"
         disclosure_note = (
             f"**[Operator confirmed participants were informed before recording at {disclosure_confirmed_at}.]**\n\n"
             if disclosure_confirmed_at else ""
         )
         header = f"## {header_title} — {today}\n\n" + disclosure_note + (opening_note or "")
-        token = new_token()
-        record_id = secrets.token_urlsafe(16)
+        token = new_token() if encrypt_new_transcripts else None
+        record_id = secrets.token_urlsafe(16) if encrypt_new_transcripts else None
         try:
-            self.token_vault.save(record_id, token)
-            encrypted_log = EncryptedLog(path, token, record_id, header)
+            encrypted_log = None
+            if encrypt_new_transcripts:
+                self.token_vault.save(record_id, token)
+                encrypted_log = EncryptedLog(path, token, record_id, header)
+            else:
+                path.write_text(header, encoding="utf-8")
             worker = TranscriptionWorker(
                 model, chunk_q, path,
                 delete_chunks=not keep_audio,
                 on_line=lambda line: self.line_queue.put(line),
-                write_line=encrypted_log.append,
+                write_line=encrypted_log.append if encrypted_log else None,
             )
             recorder.start()
             worker.start()
@@ -1616,7 +1654,8 @@ class TranscriberApp(ctk.CTk):
         self.active_capture_mode = mode
         self.active_self_transcription = self_transcription
         self.active_include_microphone = include_microphone
-        self._queue_ui(lambda: self._copy_new_transcript_token(token))
+        if token:
+            self._queue_ui(lambda value=token: self._copy_new_transcript_token(value))
         self._queue_ui(lambda: self.file_var.set(str(path)))
         self._queue_ui(self._refresh_history)
         self._queue_ui(lambda: self.status_var.set(f"Model '{model_size.title()}' on {device}"))
@@ -1840,6 +1879,8 @@ class TranscriberApp(ctk.CTk):
         self.start_btn.configure(state="normal")
         if self.recording_mode_toggle:
             self.recording_mode_toggle.configure(state="normal")
+        if self.encryption_toggle:
+            self.encryption_toggle.configure(state="normal")
         self.stop_btn.configure(state="disabled", text="Stop")
         self.status_var.set("Idle")
         self.title("AutoScript - Idle")
@@ -1859,6 +1900,9 @@ class TranscriberApp(ctk.CTk):
                 try:
                     if self._active_encrypted_log:
                         self._active_encrypted_log.append(f"**[{message}]**\n")
+                    else:
+                        with self.transcript_path.open("a", encoding="utf-8") as transcript:
+                            transcript.write(f"**[{message}]**\n")
                 except OSError:
                     pass
             if self.worker:
@@ -1908,20 +1952,41 @@ class TranscriberApp(ctk.CTk):
         self.destroy()
 
 
-def _load_data_dir() -> Path | None:
+def _load_app_config() -> dict:
     try:
-        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        return Path(cfg["data_dir"])
-    except (OSError, ValueError, KeyError):
-        return None
+        value = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_app_config(config: dict) -> None:
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_data_dir() -> Path | None:
+    value = _load_app_config().get("data_dir")
+    return Path(value) if isinstance(value, str) and value else None
 
 
 def _save_data_dir(path: Path):
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps({"data_dir": str(path)}), encoding="utf-8")
-    except OSError:
-        pass
+    config = _load_app_config()
+    config["data_dir"] = str(path)
+    _write_app_config(config)
+
+
+def _load_encryption_enabled() -> bool:
+    return bool(_load_app_config().get("encrypt_new_transcripts", True))
+
+
+def _save_encryption_enabled(enabled: bool) -> None:
+    config = _load_app_config()
+    config["encrypt_new_transcripts"] = enabled
+    _write_app_config(config)
 
 
 def _migrate_legacy_config():

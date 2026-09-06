@@ -2,7 +2,7 @@
 
 AutoScript is a free, open-source Windows application for local voice-to-text.
 It records desktop audio or your own microphone, transcribes speech on your
-computer, and stores each transcript as an encrypted `.asenc` file.
+computer, and stores each transcript locally.
 
 Audio and transcript text stay on the recording computer. AutoScript downloads a
 selected transcription model only when that model is not already installed.
@@ -21,10 +21,13 @@ Before every Device recording, AutoScript requires the operator to confirm that
 participants have been informed. The confirmation time is retained inside that
 recording's encrypted transcript. Notes mode does not show this confirmation.
 
-## Encrypted transcripts
+## Transcript privacy
 
-Every new recording is encrypted with AES-256-GCM and saved as
-`TargetProgram_DDMMMYY_HHMMSS.asenc` or `VoiceNote_DDMMMYY_HHMMSS.asenc`.
+The **Plain / Encrypted** switch in the sidebar controls the format for new
+AutoScript recordings. It is enabled by default. Encrypted recordings use
+AES-256-GCM and are saved as `TargetProgram_DDMMMYY_HHMMSS.asenc` or
+`VoiceNote_DDMMMYY_HHMMSS.asenc`. Turning the switch off saves a standard
+Markdown `.md` transcript instead.
 
 Each transcript has its own high-entropy sharing token. AutoScript copies that
 token to the recording computer's clipboard when recording starts and stores it

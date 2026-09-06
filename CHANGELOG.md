@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.3 — 2026-09-06
+
+### Added
+
+- Added a sidebar toggle for choosing encrypted `.asenc` or plaintext `.md`
+  storage for new AutoScript recordings. Encryption remains enabled by default.
+
 ## 4.0.2 — 2026-09-06
 
 ### Changed
