@@ -1,29 +1,46 @@
 """Pulls finished audio chunks off a queue, transcribes them, appends to a
 markdown transcript with wall-clock timestamps."""
+import ctypes
 import gc
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
-import numpy as np
 from faster_whisper import WhisperModel
 
 
-def load_model(model_size: str) -> tuple[WhisperModel, str]:
-    """Try GPU first, fall back to CPU if CUDA/cuBLAS/cuDNN isn't usable.
-
-    Model construction alone doesn't touch the CUDA libs (lazy load), so we
-    have to actually run a tiny inference to know if cuBLAS/cuDNN are missing.
-    """
+def _cuda_runtime_available() -> bool:
+    """Return whether this Windows installation can load faster-whisper's CUDA runtime."""
+    if sys.platform != "win32":
+        return False
     try:
-        model = WhisperModel(model_size, device="cuda", compute_type="float16")
-        list(model.transcribe(np.zeros(16000, dtype=np.float32))[0])
-        return model, "cuda"
-    except Exception:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        return model, "cpu"
+        # CTranslate2 4.8 uses CUDA 12 and cuDNN 9. Loading both catches a
+        # partial NVIDIA installation before a recording thread is started.
+        ctypes.WinDLL("cublas64_12.dll")
+        ctypes.WinDLL("cudnn64_9.dll")
+    except OSError:
+        return False
+    return True
+
+
+def load_model(model_size: str) -> tuple[WhisperModel, str]:
+    """Load on CUDA only when its required runtime libraries are usable.
+
+    A GPU driver alone is not sufficient for faster-whisper. Checking the CUDA
+    libraries first avoids a synthetic inference that can leave the UI stuck at
+    "Loading transcription model" on partial Windows CUDA installations.
+    """
+    if _cuda_runtime_available():
+        try:
+            model = WhisperModel(model_size, device="cuda", compute_type="float16")
+            return model, "cuda"
+        except Exception:
+            pass
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    return model, "cpu"
 
 
 class TranscriptionWorker:

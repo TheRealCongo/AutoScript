@@ -74,7 +74,7 @@ ICON_PATH = RESOURCES / "icon.ico"
 LOGO_PATH = RESOURCES / "autoscript_logo.png"
 PINNED_FILE = TRANSCRIPTS_DIR / ".pinned.json"
 NAMES_FILE = TRANSCRIPTS_DIR / ".names.json"
-APP_VERSION = "4.0.7"
+APP_VERSION = "4.0.8"
 RELEASES_API_URL = "https://api.github.com/repos/TheRealCongo/AutoScript/releases/latest"
 
 # Small per-user config (just "where's the data") that lives in a fixed OS

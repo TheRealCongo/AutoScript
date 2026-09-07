@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.0.8 — 2026-09-06
+
+### Fixed
+
+- Detects missing CUDA runtime libraries before loading the transcription model.
+- Falls back to CPU immediately instead of hanging during the GPU warm-up check.
+
+
 ## 4.0.7 — 2026-09-06
 
 ### Fixed

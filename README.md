@@ -5,7 +5,9 @@ It records desktop audio or your own microphone, transcribes speech on your
 computer, and stores each transcript locally.
 
 Audio and transcript text stay on the recording computer. AutoScript downloads a
-selected transcription model only when that model is not already installed.
+selected transcription model only when that model is not already installed. It
+uses NVIDIA CUDA acceleration when the required local CUDA libraries are
+available and otherwise transcribes on the CPU.
 The optional Discord plugin connects to Discord only while its bot is running.
 
 ## Recording modes
