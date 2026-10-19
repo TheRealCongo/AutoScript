@@ -1,0 +1,36 @@
+name: Clean up past releases
+# When a release is published: past releases lose their files (their notes and tags stay); the newest release's files,
+# drafts, newer pre-releases and builds of work not released yet stay. The same rule as the Bifrost apps' releases.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean up past releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          latest=$(gh api "repos/$repo/releases/latest" --jq '.tag_name + " " + .created_at') || exit 0
+          latest_tag=${latest% *}
+          latest_at=${latest#* }
+          echo "Keeping the files of $latest_tag and $THIS_TAG, drafts, newer pre-releases, and builds of work newer than $latest_tag."
+          gh api --paginate "repos/$repo/releases?per_page=100" --jq ".[] | select((.draft | not) and .created_at < \"$latest_at\" and .tag_name != \"$THIS_TAG\") | .tag_name as \$t | .assets[] | \"\(.id) \(\$t) \(.name)\"" |
+            while read -r id tag name; do
+              if gh api -X DELETE "repos/$repo/releases/assets/$id" > /dev/null; then echo "Removed $name from $tag"; else echo "::warning::Couldn't remove $name from $tag"; fi
+            done
+          gh api --paginate "repos/$repo/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired | not) | "\(.id) \(.workflow_run.head_sha) \(.name)"' |
+            while read -r id sha name; do
+              # "ahead": the newest release contains this build's commit and has moved past it.
+              if [ "$(gh api "repos/$repo/compare/$sha...$latest_tag?per_page=1" --jq .status 2>/dev/null)" = ahead ]; then
+                if gh api -X DELETE "repos/$repo/actions/artifacts/$id" > /dev/null; then echo "Removed build $name ($sha)"; else echo "::warning::Couldn't remove build $name"; fi
+              fi
+            done
